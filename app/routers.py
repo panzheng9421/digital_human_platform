@@ -148,7 +148,33 @@ def get_script(sid: int, user=Depends(get_user)):
 # ============ 链接提取（入口2）============
 @api.post("/extract")
 def extract(url: str = Form(...), user=Depends(get_user)):
-    return ss.extract_from_link(url)
+    try:
+        return ss.extract_from_link(url)
+    except Exception as e:
+        # 把具体错误返回给前端，方便定位抖音/快手/B站等链接下载失败原因
+        return JSONResponse(status_code=400, content={
+            "original_text": "",
+            "source_url": url,
+            "note": f"提取失败：{e}",
+        })
+
+
+@api.post("/extract/file")
+def extract_file(file: UploadFile = File(...), user=Depends(get_user)):
+    """上传视频/音频文件直接提取文案（最稳，不依赖第三方下载）。"""
+    from app.services import asr_client as ac
+    if not ac.available():
+        return {"original_text": "", "note": "未配置百炼 DASHSCOPE_API_KEY，无法转写"}
+    ext = (os.path.splitext(file.filename)[1] or ".mp4").lower()
+    path = os.path.join(STORAGE_DIR, "temp", f"up_{user['id']}_{int(time.time() * 1000)}{ext}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(file.file.read())
+    try:
+        text = ss.extract_from_file(path)
+        return {"original_text": text, "note": ""}
+    except Exception as e:
+        return {"original_text": "", "note": "提取失败：" + str(e)}
 
 
 # ============ 配音 ============
