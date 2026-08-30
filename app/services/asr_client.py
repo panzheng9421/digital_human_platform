@@ -24,7 +24,7 @@ def _extract_url(text: str) -> str:
         return m.group(0).rstrip(".,;?!。，；？！")
     return text.strip()
 
-SUBMIT_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/audio/transcription"
+SUBMIT_URL = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
 TASK_URL = "https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
 
 # 直链媒体后缀（百炼可直接拉公网直链转写）
@@ -48,7 +48,7 @@ def _submit(file_url: str) -> str:
     data = {
         "model": "paraformer-v2",
         "input": {"file_urls": [file_url]},
-        "parameters": {"channel_id": 0, "language_hints": ["zh", "en"]},
+        "parameters": {"channel_id": [0], "language_hints": ["zh", "en"]},
     }
     r = requests.post(SUBMIT_URL, headers=_headers(), json=data, timeout=30)
     r.raise_for_status()
@@ -73,19 +73,41 @@ def _wait(task_id: str, timeout: int = 600) -> dict:
 
 
 def _parse_text(out: dict) -> str:
+    """从百炼任务结果抽取转写文本。
+
+    百炼返回结构嵌套：output.results[].output.results[].transcription_url
+    指向的 JSON 内容为 {"transcripts":[{"text":"..."}]}（字段是 text，非 transcription）。
+    """
     parts = []
-    for res in (out.get("results") or []):
-        t = res.get("transcription")
-        if t:
-            parts.append(t)
-        elif res.get("transcription_url"):
-            try:
-                jr = requests.get(res["transcription_url"], timeout=30)
-                jr.raise_for_status()
-                parts.append(jr.json().get("transcription") or "")
-            except Exception:
-                pass
-    return "\n".join(p for p in parts if p).strip()
+
+    def _collect(node):
+        if isinstance(node, dict):
+            if node.get("transcription"):
+                parts.append(node["transcription"])
+            tu = node.get("transcription_url")
+            if tu:
+                try:
+                    jr = requests.get(tu, timeout=30).json()
+                    for tr in (jr.get("transcripts") or []):
+                        if tr.get("text"):
+                            parts.append(tr["text"])
+                except Exception:
+                    pass
+            for key in ("output", "results", "result"):
+                child = node.get(key)
+                if isinstance(child, (dict, list)):
+                    _collect(child)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item)
+
+    _collect(out)
+    # 百炼嵌套结构可能重复收集同一段，按出现顺序去重
+    uniq = []
+    for p in parts:
+        if p and p not in uniq:
+            uniq.append(p)
+    return "\n".join(uniq).strip()
 
 
 def transcribe_url(public_url: str) -> str:
@@ -97,7 +119,7 @@ def transcribe_file(local_path: str) -> str:
     """本地音视频 -> 上传 OSS 拿公网签名 URL -> 百炼转写。"""
     if not oss.available():
         raise RuntimeError("未配置 OSS：无法上传音视频转写。请在 start.bat 设置 OSS_* 环境变量。")
-    public_url = oss.upload_file(local_path)
+    public_url = oss.upload_file(local_path, for_eas=False)  # 百炼在阿里云外，需公网 URL
     return transcribe_url(public_url)
 
 
