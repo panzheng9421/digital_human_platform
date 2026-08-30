@@ -203,23 +203,42 @@ async function pageIndustry(app) {
 async function pageExtract(app) {
   app.innerHTML = topbar() + `<div class="wrap">
     ${stepsBar(0)}
-    <div class="card"><h2>链接提取文案</h2><div class="sub">粘贴爆款视频链接，提取口播文案（演示为占位，可手动粘贴真实文案）</div>
+    <div class="card"><h2>链接提取文案</h2><div class="sub">粘贴爆款视频链接，自动提取口播文案（百炼 Paraformer 转写）</div>
       <label>视频链接</label><input id="linkInput" placeholder="https://..." />
       <button class="btn" style="margin-top:14px" id="btnExtract">提取文案</button>
-      <div class="muted" style="margin-top:10px">若无链接，可直接在下方粘贴文案</div>
+      <div class="muted" style="margin-top:12px">链接下载失败时，可直接上传视频/音频文件提取：</div>
+      <input type="file" id="fileInput" accept="video/*,audio/*" />
+      <button class="btn" style="margin-top:10px" id="btnExtractFile">上传文件提取</button>
+      <div class="muted" style="margin-top:12px">若无链接/文件，可直接在下方粘贴文案</div>
       <label>文案内容（可编辑）</label><textarea id="extText" placeholder="在此粘贴或编辑视频口播文案..."></textarea>
       <button class="btn" style="margin-top:14px" id="btnNext">保存并去改写</button>
     </div>
   </div>`;
   bindLogout();
+  const runExtract = async (payload, isFile) => {
+    const btn = isFile ? document.getElementById("btnExtractFile") : document.getElementById("btnExtract");
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = "提取中...";
+    try {
+      const r = isFile
+        ? await API.postForm("/extract/file", payload)
+        : await API.postForm("/extract", payload);
+      extText.value = r.original_text || "";
+      if (r.note) toast(r.note);
+      else if (!r.original_text) toast("未提取到文案，可换文件或直接粘贴");
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; btn.textContent = old; }
+  };
   document.getElementById("btnExtract").onclick = async () => {
     const url = linkInput.value.trim();
     if (!url) { toast("请输入链接"); return; }
-    try {
-      const r = await API.postForm("/extract", { url });
-      extText.value = r.original_text;
-      if (r.note) toast("提示：" + r.note);
-    } catch (e) { toast(e.message); }
+    await runExtract({ url }, false);
+  };
+  document.getElementById("btnExtractFile").onclick = async () => {
+    const f = document.getElementById("fileInput").files[0];
+    if (!f) { toast("请选择视频/音频文件"); return; }
+    await runExtract({ file: f }, true);
   };
   document.getElementById("btnNext").onclick = async () => {
     const txt = extText.value.trim();

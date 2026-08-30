@@ -13,6 +13,7 @@ storage/
 # 环境变量 / 密钥
 .env
 *.env
+start.bat
 
 # 编辑器 / 系统
 .vscode/

@@ -74,12 +74,17 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
 
 
 def extract_from_link(url: str) -> dict:
-    """链接提取文案（占位实现）。
-    生产接入：抖音/视频号/小红书开放平台或转录 API；此处返回示例文案并提示替换。
-    """
-    # 占位：返回一段示例文案，前端允许用户直接编辑/粘贴真实文案
-    sample = ("这是从链接提取的示例文案（占位）。生产环境请接入真实的视频转录/"
-              "文案提取服务：可调用平台开放接口或用 ASR 转录视频音频得到文字。"
-              "你也可以在下方文本框直接粘贴该视频的真实口播文案，再进入改写流程。")
-    return {"original_text": sample, "source_url": url,
-            "note": "占位提取，请替换为真实转录服务或在文本框粘贴真实文案"}
+    """链接提取文案：接百炼 Paraformer-v2 真实转写；未配置 key 时回退占位提示。"""
+    from app.services import asr_client as ac
+    if not ac.available():
+        sample = ("这是从链接提取的示例文案（占位）。已接入百炼转写但缺少 DASHSCOPE_API_KEY，"
+                  "请在 start.bat 设置后重试，或在下方文本框直接粘贴真实口播文案。")
+        return {"original_text": sample, "source_url": url,
+                "note": "未配置百炼 DASHSCOPE_API_KEY，当前为占位提取"}
+    return {"original_text": ac.extract_from_link(url), "source_url": url, "note": ""}
+
+
+def extract_from_file(local_path: str) -> str:
+    """本地上传的音视频文件 -> 百炼 Paraformer-v2 转写。"""
+    from app.services import asr_client as ac
+    return ac.extract_from_file(local_path)

@@ -49,6 +49,10 @@ COSYVOICE_FORMAT = os.environ.get("COSYVOICE_FORMAT", "wav")          # wav | mp
 COSYVOICE_MODEL = os.environ.get("COSYVOICE_MODEL",
                                  "/nasmnt/models/pretrained_models/CosyVoice2-0.5B")
 
+# 2.6) 文案提取 ASR：阿里百炼 Paraformer-v2（录音文件识别，异步）
+#     API Key 即百炼 / DashScope 的 API-KEY；从环境变量读取，勿硬编码到代码
+DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
+
 # 3) 数字人（对口型视频）：
 #    AVATAR_PROVIDER = "mock"    本地产出占位视频（无需 GPU，开发/演示用）
 #    AVATAR_PROVIDER = "heygem"  调用 PAI-EAS 上部署的 HeyGem / duix.avatar（需先部署 Docker 镜像）
