@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# 运行时数据（用户上传的音视频 / 数据库 / 备份，不入库）
+storage/
+*.db
+*.db.bak_*
+*.sqlite
+
+# 环境变量 / 密钥
+.env
+*.env
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

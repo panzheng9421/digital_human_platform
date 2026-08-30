@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数字人短视频智能体平台</title>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="loading" class="center-screen">加载中...</div>
+  </div>
+
+  <!-- 全屏进度遮罩 -->
+  <div id="mask" class="mask hidden">
+    <div class="mask-box">
+      <div class="spinner"></div>
+      <div class="mask-text" id="maskText">正在生成...</div>
+      <div class="progress"><div class="progress-bar" id="maskBar"></div></div>
+      <div class="progress-num" id="maskNum">0%</div>
+    </div>
+  </div>
+
+  <!-- 通用弹框 -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><span id="modalTitle">提示</span><span class="modal-close" id="modalClose">×</span></div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-foot" id="modalFoot"></div>
+    </div>
+  </div>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
