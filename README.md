@@ -3,8 +3,8 @@
 一套完整的「文案 → 配音 → 数字人 → 剪辑 → 封面 → 发布」全自动短视频生产线，带登录鉴权、多用户隔离、任务进度。
 面向**买断式本地/云端部署**（非 SaaS 开放注册）：付款发激活码，凭码登录即用。
 
-> ⚠️ 当前为**可运行演示版**：所有 AI 推理环节（LLM 改写、TTS 配音、数字人对口型、平台发布）均为**占位实现**，
-> 在本地 CPU 即可跑通全流程并预览；接入真实服务只需改 `app/config.py` 的开关与密钥（见下文「AI 推理替换位」）。
+> ⚠️ 当前为**可运行演示版**：配音 TTS 已接入真实服务（阿里云百炼 CosyVoice v3.5），数字人对口型默认走 HeyGem/duix.avatar（音频驱动，需部署）；
+> 文案改写、平台发布按开关可切换占位/真实实现。本地 CPU 即可跑通全流程预览；接真实服务改 `app/config.py`（见「AI 推理替换位」）。
 
 ---
 
@@ -113,8 +113,13 @@ digital_human_platform/
 │   │   ├── viral_scripts.py   # 行业爆款文案库
 │   │   └── sensitive_words.py  # 违禁词库
 │   └── services/
-│       ├── script_service.py   # 改写/链接提取（占位 LLM）
-│       └── media_utils.py      # 音频/视频/封面生成（占位 TTS、ffmpeg 合成）
+│       ├── script_service.py   # 改写/链接提取
+│       ├── cosyvoice_client.py # 阿里云百炼 CosyVoice v3.5 配音 / 声音复刻（真实 TTS）
+│       ├── heygem_client.py    # HeyGem / duix.avatar 对口型客户端（PAI-EAS + OSS 中转）
+│       ├── asr_client.py       # 抖音链接提取 + 文案 ASR（Paraformer-v2）
+│       ├── oss_client.py       # OSS 文件中转（本地平台 <-> 云端 EAS）
+│       ├── classify.py         # 行业分类（餐饮/房产/…/二手车）
+│       └── media_utils.py      # 占位降级：静态图+音频预览 / ffmpeg 合成
 ├── static/
 │   ├── index.html         # SPA 外壳
 │   ├── css/styles.css
@@ -131,8 +136,8 @@ digital_human_platform/
 | 环节 | 当前 | 生产替换 | 开关/变量 |
 |---|---|---|---|
 | 文案改写 | 模板拼接 | DeepSeek / GPT / 通义千问 | `LLM_API_KEY` `LLM_BASE_URL` `LLM_MODEL` |
-| 配音 TTS | 合成 WAV | CosyVoice2 / 火山 / 即梦 | `TTS_ENABLED=1` `TTS_API_URL` |
-| 数字人 | 静态图+音频 | HeyGem / duix.avatar / 火山 | `DH_ENABLED=1` `DH_API_URL` |
+| 配音 TTS | 占位 WAV | 阿里云百炼 CosyVoice v3.5（plus / flash，已接入真实服务） | `DASHSCOPE_API_KEY` + `DASHSCOPE_TTS_MODEL` |
+| 数字人 | 静态图+音频 | HeyGem / duix.avatar（PAI-EAS，音频驱动对口型） | `AVATAR_PROVIDER=heygem` + `HEYGEM_ENDPOINT` |
 | 发布 | 占位写库 | 抖音/视频号开放平台 | `PUBLISH_ENABLED=1` |
 
 接真实服务时，修改 `app/services/script_service.py`（改写）、`app/services/media_utils.py`（配音/数字人/剪辑）、`app/routers.py`（发布）对应函数，把占位逻辑换成 HTTP 调用即可。
@@ -157,3 +162,4 @@ digital_human_platform/
 - 无 ffmpeg 环境时，数字人/剪辑视频降级为「静态形象图 + 配音音频」预览（已装 `imageio-ffmpeg`，多数环境可直接出 MP4）。
 - 移动端布局未专项优化。
 - 任务状态存内存（`task_manager.py`），进程重启后进行中的任务进度丢失（已完成的结果已落库不受影响）。
+- **数字人底座（HeyGem / duix.avatar）为音频驱动对口型**：仅驱动面部口型与头部微动，**不会根据文案语义自动生成肢体动作**。参考视频里的动作按原时序播放，与配音内容不一定对齐（即「动作和配音对不上」）。若需动作与口播同步，要么选「不出动作、只做口播头部」的干净形象，要么后续加「动作时间轴手动对齐」功能。

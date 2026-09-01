@@ -52,6 +52,11 @@ COSYVOICE_MODEL = os.environ.get("COSYVOICE_MODEL",
 # 2.6) 文案提取 ASR：阿里百炼 Paraformer-v2（录音文件识别，异步）
 #     API Key 即百炼 / DashScope 的 API-KEY；从环境变量读取，勿硬编码到代码
 DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
+# 2.7) 阿里百炼语音合成 / 声音复刻（替换自部署 EAS CosyVoice）
+#     业务空间 Workspace ID：形如 ws-xxxx 或空白走默认公共 endpoint
+DASHSCOPE_WORKSPACE_ID = os.environ.get("DASHSCOPE_WORKSPACE_ID", "")
+DASHSCOPE_TTS_MODEL = os.environ.get("DASHSCOPE_TTS_MODEL", "cosyvoice-v3.5-plus")
+DASHSCOPE_VOICE_ENROLLMENT_MODEL = os.environ.get("DASHSCOPE_VOICE_ENROLLMENT_MODEL", "voice-enrollment")
 
 # 3) 数字人（对口型视频）：
 #    AVATAR_PROVIDER = "mock"    本地产出占位视频（无需 GPU，开发/演示用）

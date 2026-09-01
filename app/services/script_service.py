@@ -3,9 +3,18 @@
 接入真实 LLM：把 rewrite() 内部改为调用 config.LLM_* 即可，输入输出结构不变。
 """
 import re
+import requests as _requests
 
 TYPES = ["解题型", "推荐型", "揭秘型", "案例型", "疑问型"]
 PERSONAS = ["老板", "专家", "邻家大哥", "毒舌朋友"]
+
+REWRITE_WORD_TOLERANCE = 50  # 改写稿相对目标字数的浮动上限（字），内部兜底，不告诉 LLM
+REWRITE_MAX_LEN = 400        # 改写稿字数硬上限：原文字数超过它时按 400 压缩（长口播原文不需要等长改写）
+
+
+def _target_len(original: str) -> int:
+    """改写稿的目标字数上限：短原文按原文字数，长原文压到 REWRITE_MAX_LEN。"""
+    return min(_word_count(original), REWRITE_MAX_LEN)
 
 _PERSONA_OPEN = {
     "老板": "我是个开了多年店的老板，今天说点大实话。",
@@ -35,6 +44,50 @@ def _split_sentences(text: str):
     return [p for p in parts if len(p) > 4]
 
 
+def _word_count(text: str) -> int:
+    """与前端对齐：去除所有空白字符后的长度。"""
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def _clamp_text(text: str, max_len: int) -> tuple:
+    """将 text 截断到不超过 max_len 字（去空白计数）。
+    优先按句子截断以保证语义完整，极端情况下硬截，并返回提示语。"""
+    if _word_count(text) <= max_len:
+        return text, ""
+    # 按句末标点切分，保留标点
+    parts = re.split(r"([。！？\.\n])", text)
+    # 把标点和前文拼成完整句子
+    sentences = []
+    i = 0
+    while i < len(parts):
+        s = parts[i]
+        if i + 1 < len(parts) and parts[i + 1] in "。！？.\n":
+            s += parts[i + 1]
+            i += 2
+        else:
+            i += 1
+        s = s.strip()
+        if s:
+            sentences.append(s)
+    # 贪心按句追加，直到不超限
+    buf = ""
+    for s in sentences:
+        candidate = (buf + "\n" + s).strip() if buf else s
+        if _word_count(candidate) <= max_len:
+            buf = candidate
+        else:
+            break
+    # 兜底：连第一句都超，就硬截；尽量落在句末标点，避免半截话
+    if not buf:
+        text_no_space = re.sub(r"\s+", "", text)
+        cut = text_no_space[:max_len]
+        last_punc = max(cut.rfind(p) for p in "。！？.")
+        buf = cut[: last_punc + 1] if last_punc > 0 else cut
+    note = (f"改写稿超出字数上限（{max_len} 字 = 目标字数 + {REWRITE_WORD_TOLERANCE} 字浮动余量），"
+            f"超出的尾句已丢弃。")
+    return buf, note
+
+
 def _key_points(text: str, n=3):
     sents = _split_sentences(text)
     if not sents:
@@ -42,15 +95,52 @@ def _key_points(text: str, n=3):
     return sents[:n]
 
 
-def rewrite(original: str, type_: str, persona: str) -> dict:
-    """生成改写文案。返回 {title, generated_text}。"""
+_PERSONA_DESC = {
+    "老板": "你是开了多年实体店的老板，务实老练、说大实话、接地气，像跟老顾客唠嗑，不端着。",
+    "专家": "你是从业十几年的行业专家，专业权威、条理清晰，给出可信判断和实用干货。",
+    "邻家大哥": "你是亲切随和的邻家大哥，掏心窝子、像朋友聊天，语气轻松好懂。",
+    "毒舌朋友": "你是敢说大实话的毒舌朋友，犀利直白、不绕弯子，带点调侃但句句在理。",
+}
+_TYPE_DESC = {
+    "解题型": "结构：先抛出一个普遍痛点，再给'分步解决方案'（第1步/第2步/第3步），每步讲清怎么做。",
+    "推荐型": "结构：直接推荐一个具体东西，讲清楚'为什么值得入手/闭眼入不踩雷'，语气真诚。",
+    "揭秘型": "结构：逐条揭露'行业内不愿让人知道的真相'（第一个真相/第二个真相...），制造信息差。",
+    "案例型": "结构：用一个'我身边/我认识的真实例子'带出观点，有前因后果和结果。",
+    "疑问型": "结构：先抛一个'你有没有想过'的扎心问题，再给出直白答案，点破关键。",
+}
+
+
+def _call_deepseek(system: str, user: str, temperature: float = 0.8) -> str:
+    """调用 DeepSeek（OpenAI 兼容 /chat/completions）。未配置 key 或失败抛异常。"""
+    from app import config
+    if not config.LLM_API_KEY:
+        raise RuntimeError("未配置 LLM_API_KEY（请在 start.bat 设置 LLM_API_KEY）")
+    url = config.LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": config.LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+    }
+    headers = {
+        "Authorization": f"Bearer {config.LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    r = _requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def _rewrite_template(original: str, type_: str, persona: str) -> dict:
+    """无 LLM key / LLM 失败时的规则模板回退（结构清晰、零依赖）。"""
     type_ = type_ if type_ in TYPES else "解题型"
     persona = persona if persona in PERSONAS else "老板"
     points = _key_points(original, 3)
-
     open_line = _PERSONA_OPEN.get(persona, _PERSONA_OPEN["老板"])
     hook = _TYPE_HOOK.get(type_, _TYPE_HOOK["解题型"])
-
     body = ""
     if type_ == "解题型":
         for i, p in enumerate(points, 1):
@@ -63,28 +153,105 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
         body = f"我认识一个人，{points[0]}。\n后来他怎么做的？{points[1] if len(points) > 1 else '换了思路'}。\n结果你猜怎么着，{points[2] if len(points) > 2 else '真就翻身了'}。\n"
     elif type_ == "疑问型":
         body = f"其实答案很简单：{points[0]}。\n你一直做不对，是因为{points[1] if len(points) > 1 else '没抓到关键'}。\n换个方法试试，马上不一样。\n"
-
     close = _PERSONA_CLOSE.get(persona, _PERSONA_CLOSE["老板"])
     generated = f"{open_line}\n{hook}\n{body}\n{close}"
-
-    # 标题
+    generated, note = _clamp_text(generated, _target_len(original) + REWRITE_WORD_TOLERANCE)
     topic = points[0][:12] if points else "干货分享"
     title = f"【{type_}】{persona}视角：{topic}"
-    return {"title": title, "generated_text": generated}
+    res = {"title": title, "generated_text": generated}
+    if note:
+        res["note"] = note
+    return res
+
+
+def rewrite(original: str, type_: str, persona: str) -> dict:
+    """生成改写文案。优先调用 DeepSeek（真实 LLM）；未配置 key 或失败回退规则模板。
+    返回 {title, generated_text, source, note}：source=llm|template。"""
+    type_ = type_ if type_ in TYPES else "解题型"
+    persona = persona if persona in PERSONAS else "老板"
+    try:
+        original_len = _word_count(original)
+        target_len = _target_len(original)
+        # 原文超长时明确要求压缩提炼，避免 LLM 逐句复述导致严重超限
+        compress_hint = ""
+        if target_len < original_len:
+            compress_hint = (f"注意：原文有 {original_len} 字，属于长稿，请压缩提炼最核心的观点与信息，"
+                             f"不要逐句复述，也不要为了凑字数硬加内容。\n")
+        system = (
+            "你是短视频口播文案改写助手。任务：把用户给的原始口播文案，改写成一篇新的短视频口播稿。\n"
+            "要求：1) 保留原文核心观点与关键信息，不得编造虚假数据或数字；2) 口语化、有节奏感，适合真人念出来；\n"
+            "3) 严格遵循指定'人设语气'；4) 按指定'写法结构'组织内容；5) 结尾自然收束，不堆砌营销话术；\n"
+            f"6) 改写后的口播稿字数（去除空白字符后的连续字符数）必须严格不超过 {target_len} 字，"
+            f"并尽量接近该字数，不要为凑字数硬加内容；\n"
+            "7) 只输出改写后的口播文案正文，不要任何解释、不要加书名号或引号包裹。\n"
+            "8) 口播断句友好（重要）：语音合成模型容易在「动词 + 方位词」之间误断句，"
+            "例如把'修车路上'念成'修车。路上'、把'开车车上'念成'开车。车上'。为避免这种尴尬断句，"
+            "输出时请把这类组合写成带'的'的连读形式：'修车路上'→'修车的路上'、'开车车上'→'开车的车上'；"
+            "同理'XX店里 / XX家里 / XX学校 / XX车上 / XX路上'也优先写成'XX的店里'等连读形式。"
+            "目的只是让句子念出来连贯，不要因此删改原意或硬凑字数。"
+        )
+        user = (
+            f"人设语气：{_PERSONA_DESC.get(persona, _PERSONA_DESC['老板'])}\n"
+            f"写法结构：{_TYPE_DESC.get(type_, _TYPE_DESC['解题型'])}\n"
+            f"原始文案字数（去除空白）：{original_len} 字\n"
+            f"改写稿字数上限：{target_len} 字（不得超过）\n"
+            f"{compress_hint}\n"
+            f"原始文案：\n{original}\n\n请输出改写后的口播文案："
+        )
+        generated = _call_deepseek(system, user)
+        # 硬性兜底：无论如何不能超过目标字数 + 容差（正常改写不会触发）
+        generated, note = _clamp_text(generated, target_len + REWRITE_WORD_TOLERANCE)
+        topic = (original[:12].replace("\n", " ").strip()) or "干货分享"
+        title = f"【{type_}】{persona}视角：{topic}"
+        return {"title": title, "generated_text": generated, "source": "llm", "note": note}
+    except Exception as e:
+        print(f"[rewrite] LLM 不可用，回退规则模板：{e}")
+        res = _rewrite_template(original, type_, persona)
+        res["source"] = "template"
+        fallback_note = f"LLM 调用失败（{e}），已用本地模板生成"
+        existing_note = res.get("note", "")
+        res["note"] = f"{fallback_note}{'；' + existing_note if existing_note else ''}"
+        return res
 
 
 def extract_from_link(url: str) -> dict:
-    """链接提取文案：接百炼 Paraformer-v2 真实转写；未配置 key 时回退占位提示。"""
+    """链接提取文案：接百炼 Paraformer-v2 真实转写；未配置 key 时回退占位提示。
+    返回 {original_text, source_url, industry, type, meta, note}，industry/type 为智能分类结果。"""
     from app.services import asr_client as ac
+    from app.services import classify as cl
     if not ac.available():
         sample = ("这是从链接提取的示例文案（占位）。已接入百炼转写但缺少 DASHSCOPE_API_KEY，"
                   "请在 start.bat 设置后重试，或在下方文本框直接粘贴真实口播文案。")
-        return {"original_text": sample, "source_url": url,
+        return {"original_text": sample, "source_url": url, "industry": "", "type": "", "meta": {},
                 "note": "未配置百炼 DASHSCOPE_API_KEY，当前为占位提取"}
-    return {"original_text": ac.extract_from_link(url), "source_url": url, "note": ""}
+    res = ac.extract_from_link(url)
+    text = res.get("text", "")
+    if not isinstance(text, str):
+        # 防御：极少数情况下 text 不是字符串，强制转字符串避免前端显示 [object Object]
+        text = str(text) if text is not None else ""
+    return {
+        "original_text": text,
+        "source_url": url,
+        "industry": cl.classify_industry(text),
+        "type": cl.classify_type(text),
+        "meta": res.get("meta", {}) if isinstance(res.get("meta"), dict) else {},
+        "note": "",
+    }
 
 
-def extract_from_file(local_path: str) -> str:
-    """本地上传的音视频文件 -> 百炼 Paraformer-v2 转写。"""
+def extract_from_file(local_path: str) -> dict:
+    """本地上传的音视频文件 -> 百炼 Paraformer-v2 转写；返回含智能分类的 dict。"""
     from app.services import asr_client as ac
-    return ac.extract_from_file(local_path)
+    from app.services import classify as cl
+    res = ac.extract_from_file(local_path)
+    text = res.get("text", "")
+    if not isinstance(text, str):
+        text = str(text) if text is not None else ""
+    return {
+        "original_text": text,
+        "source_url": "",
+        "industry": cl.classify_industry(text),
+        "type": cl.classify_type(text),
+        "meta": res.get("meta", {}) if isinstance(res.get("meta"), dict) else {},
+        "note": "",
+    }

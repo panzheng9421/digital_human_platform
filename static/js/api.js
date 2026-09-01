@@ -37,6 +37,8 @@ const API = {
 
   get(path) { return this.req(path); },
 
+  delete(path) { return this.req(path, { method: "DELETE" }); },
+
   // 轮询任务直到完成
   async pollTask(tid, onProgress) {
     while (true) {

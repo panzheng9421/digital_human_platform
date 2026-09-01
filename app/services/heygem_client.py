@@ -110,11 +110,14 @@ def _looks_like_local_path(s) -> bool:
 
 def generate_talking_video(audio_url, video_url,
                            timeout=900, interval=5,
-                           cold_retries=12, cold_wait=10):
+                           cold_retries=12, cold_wait=10,
+                           on_progress=None):
     """提交并轮询直到完成，返回 {video_url, progress} 或抛异常。
 
     cold_retries: 提交时遇 EAS 503 冷启动的重试次数。
     audio_url / video_url: 必须为 EAS 容器可访问的 URL（OSS 上传得到）。
+    on_progress: 可选回调 on_progress(progress:int)，每次 query 轮询拿到 EAS 真实
+                 progress 时调用，用于驱动前端进度条（避免卡在起步值）。
     """
     code, sub = submit_video(audio_url, video_url)
     # 冷启动：503 / -1 时重试提交
@@ -150,6 +153,16 @@ def generate_talking_video(audio_url, video_url,
     while waited < timeout:
         res = query_video(code)
         c = res.get("code")
+        # 抽取 EAS 真实推理进度（兼容顶层 / data 嵌套两种返回结构），回调驱动进度条
+        if on_progress:
+            _p = res.get("progress")
+            if _p is None and isinstance(res.get("data"), dict):
+                _p = res.get("data").get("progress")
+            if _p is not None:
+                try:
+                    on_progress(int(_p))
+                except (TypeError, ValueError):
+                    pass
         if c in (9999, 10002, 10003, 10004):
             raise RuntimeError(f"HeyGem 任务不存在/失败: {res}")
         if c in (-1, 503):
