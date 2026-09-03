@@ -134,11 +134,20 @@ def transcribe_url(public_url: str) -> str:
 
 
 def transcribe_file(local_path: str) -> str:
-    """本地音视频 -> 上传 OSS 拿公网签名 URL -> 百炼转写。"""
+    """本地音视频 -> 上传 OSS 拿公网签名 URL -> 百炼转写。转写完成后清理 OSS 中转对象。
+
+    注意：本函数只删 OSS 上的上传副本，不删本地文件——本地文件可能是持久音频
+    （如剪辑页字幕对齐传入的配音/源视频），是否删除由调用方（中转入口）决定。
+    """
     if not oss.available():
         raise RuntimeError("未配置 OSS：无法上传音视频转写。请在 start.bat 设置 OSS_* 环境变量。")
     public_url = oss.upload_file(local_path, for_eas=False)  # 百炼在阿里云外，需公网 URL
-    return transcribe_url(public_url)
+    key = oss.object_key_from_url(public_url)
+    try:
+        return transcribe_url(public_url)
+    finally:
+        # 百炼已拉取转写，OSS 上的中转副本可删（失败仅警告）
+        oss.delete_object(key)
 
 
 def _parse_sentences(out: dict):
@@ -190,11 +199,18 @@ def transcribe_url_ts(public_url: str, timeout: int = 180) -> list:
 
 
 def transcribe_file_ts(local_path: str, timeout: int = 180) -> list:
-    """本地音视频 -> 上传 OSS 拿公网 URL -> 百炼转写，返回带时间戳句子列表（用于字幕对齐）。"""
+    """本地音视频 -> 上传 OSS 拿公网 URL -> 百炼转写，返回带时间戳句子列表（用于字幕对齐）。
+
+    转写完成后清理 OSS 中转对象（只删 OSS 副本，不删本地文件，理由同 transcribe_file）。
+    """
     if not oss.available():
         raise RuntimeError("未配置 OSS：无法上传音视频做 ASR 对齐。请在 start.bat 设置 OSS_* 环境变量。")
     public_url = oss.upload_file(local_path, for_eas=False)  # 百炼在阿里云外，需公网 URL
-    return transcribe_url_ts(public_url, timeout=timeout)
+    key = oss.object_key_from_url(public_url)
+    try:
+        return transcribe_url_ts(public_url, timeout=timeout)
+    finally:
+        oss.delete_object(key)
 
 
 def _download_direct(url: str, dest_dir: str) -> str:
@@ -386,9 +402,29 @@ def extract_from_link(url: str) -> dict:
     tmp = os.path.join(STORAGE_DIR, "temp")
     os.makedirs(tmp, exist_ok=True)
     path, meta = download_video(url, tmp)
-    return {"text": transcribe_file(path), "meta": meta}
+    try:
+        return {"text": transcribe_file(path), "meta": meta}
+    finally:
+        # yt-dlp 下载的本地中转文件用完即删（失败仅警告，不影响主流程）
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+                print(f"[asr] 已清理本地中转文件: {path}")
+        except Exception as e:
+            print(f"[asr] 清理本地中转文件失败(可忽略): {path} -> {e}")
 
 
 def extract_from_file(local_path: str) -> dict:
-    """本地上传的音视频文件 -> 上传 OSS -> 百炼转写。无视频链接元数据，meta 为空。"""
-    return {"text": transcribe_file(local_path), "meta": {}}
+    """本地上传的音视频文件 -> 上传 OSS -> 百炼转写。无视频链接元数据，meta 为空。
+
+    上传的中转文件（storage/temp 下）转写完成后清理；OSS 副本由 transcribe_file 清理。
+    """
+    try:
+        return {"text": transcribe_file(local_path), "meta": {}}
+    finally:
+        try:
+            if local_path and os.path.exists(local_path):
+                os.remove(local_path)
+                print(f"[asr] 已清理本地中转文件: {local_path}")
+        except Exception as e:
+            print(f"[asr] 清理本地中转文件失败(可忽略): {local_path} -> {e}")

@@ -88,6 +88,23 @@ def _clamp_text(text: str, max_len: int) -> tuple:
     return buf, note
 
 
+def _topic_snippet(text: str, max_len: int = 12) -> str:
+    """提取标题主题，按词/句边界截断，避免英文单词被拆开。"""
+    if not text:
+        return ""
+    text = text.replace("\n", " ").strip()
+    if len(text) <= max_len:
+        return text
+    # 优先按空格或中英文标点切分
+    boundaries = " \t，,。！!？?；;:："
+    cut = max_len
+    while cut > 0 and text[cut] not in boundaries:
+        cut -= 1
+    if cut <= 0:
+        cut = max_len
+    return text[:cut].rstrip(boundaries)
+
+
 def _key_points(text: str, n=3):
     sents = _split_sentences(text)
     if not sents:
@@ -156,7 +173,7 @@ def _rewrite_template(original: str, type_: str, persona: str) -> dict:
     close = _PERSONA_CLOSE.get(persona, _PERSONA_CLOSE["老板"])
     generated = f"{open_line}\n{hook}\n{body}\n{close}"
     generated, note = _clamp_text(generated, _target_len(original) + REWRITE_WORD_TOLERANCE)
-    topic = points[0][:12] if points else "干货分享"
+    topic = _topic_snippet(points[0], 12) if points else "干货分享"
     title = f"【{type_}】{persona}视角：{topic}"
     res = {"title": title, "generated_text": generated}
     if note:
@@ -201,7 +218,7 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
         generated = _call_deepseek(system, user)
         # 硬性兜底：无论如何不能超过目标字数 + 容差（正常改写不会触发）
         generated, note = _clamp_text(generated, target_len + REWRITE_WORD_TOLERANCE)
-        topic = (original[:12].replace("\n", " ").strip()) or "干货分享"
+        topic = _topic_snippet(original, 12) or "干货分享"
         title = f"【{type_}】{persona}视角：{topic}"
         return {"title": title, "generated_text": generated, "source": "llm", "note": note}
     except Exception as e:

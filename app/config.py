@@ -63,6 +63,12 @@ DASHSCOPE_VOICE_ENROLLMENT_MODEL = os.environ.get("DASHSCOPE_VOICE_ENROLLMENT_MO
 #    AVATAR_PROVIDER = "heygem"  调用 PAI-EAS 上部署的 HeyGem / duix.avatar（需先部署 Docker 镜像）
 AVATAR_PROVIDER = os.environ.get("AVATAR_PROVIDER", "mock")
 
+# 数字人形象上传校验：真实生成(heygem/duix)吃的是**视频形象**(对口型驱动源)，
+# mock 降级预览才用静态图；故图片与视频同时放行。
+ALLOWED_AVATAR_FORMATS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
+                          ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+MAX_AVATAR_SIZE_MB = 200  # 视频形象体积大，放宽到 200MB）
+
 # HeyGem / duix.avatar（Docker 路线，备选）
 HEYGEM_ENDPOINT = os.environ.get("HEYGEM_ENDPOINT", "")
 HEYGEM_TOKEN = os.environ.get("HEYGEM_TOKEN", "")

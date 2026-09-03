@@ -253,6 +253,17 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand);b
 .dh-h-info{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
 .dh-h-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dh-h-meta{font-size:11px;color:var(--muted);margin-top:4px}
+.dh-history-list{max-height:62vh;overflow:auto;margin:-4px 0}
+/* 视频删除按钮（危险色，与 chip-del 一致） */
+.dh-del{border:1px solid rgba(255,80,80,.45);background:transparent;color:#ff6b6b;font-size:13px;line-height:1;padding:6px 13px;border-radius:10px;cursor:pointer;flex-shrink:0;transition:.15s}
+.dh-del:hover{background:rgba(255,80,80,.92);color:#fff;border-color:transparent}
+/* 弹窗历史记录：按 16:9 / 9:16 / 1:1 分别给缩略图框尺寸，video contain 不裁切 */
+.modal .dh-history-item{gap:16px;padding:14px 0}
+.modal .dh-h-media{flex-shrink:0}
+.modal .dh-h-media.portrait{width:144px;aspect-ratio:9/16}
+.modal .dh-h-media.landscape{width:300px;aspect-ratio:16/9}
+.modal .dh-h-media.square{width:200px;aspect-ratio:1/1}
+.modal .dh-h-media .dh-h-video{width:100%;height:100%;object-fit:contain;border-radius:10px;border:1px solid var(--line);background:#000;display:block}
 .preview-box{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:16px;white-space:pre-wrap;font-size:14px;line-height:1.7;max-height:340px;overflow:auto;outline:none}
 .preview-box[contenteditable="true"]:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(255,110,48,.15)}
 .preview-box[contenteditable="true"]:empty:before{content:"在此输入文案...";color:var(--muted)}
@@ -276,7 +287,7 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand);b
 
 /* ===== 弹框 ===== */
 .modal{position:fixed;inset:0;background:rgba(6,8,12,.66);display:flex;align-items:center;justify-content:center;z-index:60;backdrop-filter:blur(3px)}
-.modal-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;width:min(560px,92vw);max-height:86vh;overflow:auto;box-shadow:var(--shadow)}
+.modal-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;width:min(820px,94vw);max-height:86vh;overflow:auto;box-shadow:var(--shadow)}
 .modal-head{display:flex;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line);font-weight:600}
 .modal-close{font-size:22px;color:var(--muted);cursor:pointer;line-height:1;transition:.15s}
 .modal-close:hover{color:var(--brand)}

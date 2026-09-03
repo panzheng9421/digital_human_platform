@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 
 from app import db, auth
-from app.config import STORAGE_DIR, AVATAR_PROVIDER, COSYVOICE_FORMAT
+from app.config import STORAGE_DIR, AVATAR_PROVIDER, COSYVOICE_FORMAT, ALLOWED_AVATAR_FORMATS, MAX_AVATAR_SIZE_MB
 from app.task_manager import (create_task, update, get_task, set_result,
                               start_progress_ticker)
 from app.data import viral_scripts as vs
@@ -66,6 +66,35 @@ def _looks_like_audio(head: bytes, ext: str) -> bool:
     for others in sigs.values():
         for sig in others:
             if sig in head:
+                return True
+    return False
+
+
+def _looks_like_avatar(head: bytes, ext: str) -> bool:
+    """按扩展名对应的文件头 magic 校验形象是否为真实图片或视频；命中任一已知签名也放行。
+
+    真实生成(heygem/duix)用视频形象(对口型驱动源)，mock 降级预览用静态图，故图片视频都认。
+    """
+    sigs = {
+        ".jpg":  [b"\xff\xd8\xff"],
+        ".jpeg": [b"\xff\xd8\xff"],
+        ".png":  [b"\x89PNG"],
+        ".webp": [b"WEBP"],
+        ".bmp":  [b"BM"],
+        ".gif":  [b"GIF87a", b"GIF89a"],
+        ".mp4":  [b"ftyp"],
+        ".mov":  [b"ftyp"],
+        ".m4v":  [b"ftyp"],
+        ".webm": [b"\x1a\x45\xdf\xa3"],
+        ".mkv":  [b"\x1a\x45\xdf\xa3"],
+        ".avi":  [b"AVI"],
+    }
+    for sig in sigs.get(ext, []):
+        if sig in head[:16]:
+            return True
+    for others in sigs.values():
+        for sig in others:
+            if sig in head[:16]:
                 return True
     return False
 
@@ -366,6 +395,41 @@ def list_user_videos(user=Depends(get_user)):
     return out
 
 
+@api.delete("/videos/{video_id}")
+def delete_video(video_id: int, user=Depends(get_user)):
+    """删除数字人视频（级联删除其名下所有剪辑成品）。
+    清理：本地视频文件 + 关联 edits 文件/行 + videos 行。
+    注意：poster_path 指向用户数字人形象（storage/avatars/），属可复用资产，不删。"""
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM videos WHERE id=? AND user_id=?",
+                       (video_id, user["id"])).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "视频不存在")
+    # 1) 级联删剪辑成品（文件 + 行）
+    edits = conn.execute("SELECT file_path FROM edits WHERE video_id=? AND user_id=?",
+                         (video_id, user["id"])).fetchall()
+    for e in edits:
+        fp = os.path.join(STORAGE_DIR, (e["file_path"] or "").replace("/", os.sep))
+        if fp and os.path.exists(fp):
+            try:
+                os.remove(fp)
+            except Exception:
+                pass
+    conn.execute("DELETE FROM edits WHERE video_id=? AND user_id=?", (video_id, user["id"]))
+    # 2) 删主视频文件
+    vf = os.path.join(STORAGE_DIR, (row["file_path"] or "").replace("/", os.sep))
+    if vf and os.path.exists(vf):
+        try:
+            os.remove(vf)
+        except Exception:
+            pass
+    # 3) 删视频行
+    conn.execute("DELETE FROM videos WHERE id=?", (video_id,))
+    conn.commit(); conn.close()
+    return {"ok": True}
+
+
 # ============ 链接提取（入口2）============
 @api.post("/extract")
 def extract(url: str = Form(...), user=Depends(get_user)):
@@ -607,6 +671,27 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
                     (user["id"], script_id, timbre_id, emotion, speed, pitch, volume, seed,
                      _rel(out), duration, "done", _now()))
         aid = cur.lastrowid
+        # 按文案去重：同一 script_id 只保留本次最新配音，删除之前的旧配音（文件 + DB 行）。
+        # 旧配音的 wav 不被任何数字人视频依赖（数字人视频是自包含 mp4，只走剪辑不重新配音），可放心删。
+        try:
+            old_rows = conn.execute(
+                "SELECT id, file_path FROM audios WHERE script_id=? AND user_id=? AND id != ?",
+                (script_id, user["id"], aid)
+            ).fetchall()
+            for o in old_rows:
+                fp = os.path.join(STORAGE_DIR, (o["file_path"] or "").replace("/", os.sep))
+                if fp and os.path.exists(fp):
+                    try:
+                        os.remove(fp)
+                        print(f"[dubbing] 清理冗余旧配音: {fp}")
+                    except Exception as e:
+                        print(f"[dubbing] 清理冗余旧配音失败(可忽略): {fp} -> {e}")
+            if old_rows:
+                conn.execute("DELETE FROM audios WHERE script_id=? AND user_id=? AND id != ?",
+                             (script_id, user["id"], aid))
+                print(f"[dubbing] 已清理 {len(old_rows)} 条冗余旧配音记录(script={script_id})")
+        except Exception as e:
+            print(f"[dubbing] 旧配音去重异常(不影响本次结果): {e}")
         conn.commit(); conn.close()
         r = {"audio_id": aid, "url": "/files/" + _rel(out), "duration": duration,
              "emotion": emotion, "speed": speed, "pitch": pitch,
@@ -621,7 +706,24 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
 # ============ 数字人 ============
 @api.post("/avatars/upload")
 def upload_avatar(name: str = Form("我的形象"), file: UploadFile = File(...), user=Depends(get_user)):
-    ext = os.path.splitext(file.filename)[1] or ".jpg"
+    # 1) 扩展名：真实生成吃视频形象，mock 降级吃图片，故图片/视频都放行
+    ext = (os.path.splitext(file.filename)[1] or "").lower()
+    if ext not in ALLOWED_AVATAR_FORMATS:
+        raise HTTPException(400,
+            f"形象仅支持 {' / '.join(sorted(f.lstrip('.') for f in ALLOWED_AVATAR_FORMATS))} 图片/视频格式"
+            f"（当前上传：{ext or '无扩展名'}）")
+    # 2) 二次校验：读文件头 magic bytes，拦截改后缀的非图片/视频文件
+    head = file.file.read(16)
+    file.file.seek(0)
+    if not _looks_like_avatar(head, ext):
+        raise HTTPException(400, "文件内容不是有效的图片或视频，请重新选择")
+    # 3) 体积校验：≤ MAX_AVATAR_SIZE_MB
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > MAX_AVATAR_SIZE_MB * 1024 * 1024:
+        raise HTTPException(400,
+            f"形象文件不能超过 {MAX_AVATAR_SIZE_MB}MB（当前 {size / 1024 / 1024:.1f}MB）")
     path = os.path.join(STORAGE_DIR, "avatars", f"av{user['id']}_{int(time.time())}{ext}")
     with open(path, "wb") as f:
         f.write(file.file.read())
@@ -692,6 +794,8 @@ def dh_generate(audio_id: int = Form(...), avatar_id: int = Form(...), user=Depe
             except Exception as e:
                 update(tid, status="error", error=f"OSS 上传失败: {e}")
                 return
+            # 收集输入副本的 object_key，生成完成后清理（只删 OSS，不删本地 storage/avatars、audios）
+            in_keys = [oss.object_key_from_url(audio_url), oss.object_key_from_url(video_url)]
             est_sec = max(15.0, (a["duration"] or 5.0) * 3 + 15)
 
             def _on_prog(p):
@@ -704,25 +808,34 @@ def dh_generate(audio_id: int = Form(...), avatar_id: int = Form(...), user=Depe
                 update(tid, progress=int(max(20, min(80, max(cur, p)))))
 
             ticker = start_progress_ticker(tid, 20, 80, est_sec)
+            out_key = None
             try:
-                res = hg.generate_talking_video(audio_url, video_url, on_progress=_on_prog)
-            except Exception as e:
-                update(tid, status="error", error=f"HeyGem 推理失败: {e}")
-                return
+                try:
+                    res = hg.generate_talking_video(audio_url, video_url, on_progress=_on_prog)
+                except Exception as e:
+                    update(tid, status="error", error=f"HeyGem 推理失败: {e}")
+                    return
+                finally:
+                    ticker.stop()
+                remote = res.get("video_url")
+                if not remote:
+                    update(tid, status="error",
+                           error="HeyGem 未返回视频地址。请确认 EAS 容器入口 serve_oss.py 已部署（结果回传 OSS）。")
+                    return
+                try:
+                    # remote 为 OSS 签名 URL 或公网直链，拉回本地 storage
+                    oss.download_url(remote, out)
+                    out_key = oss.object_key_from_url(remote)
+                except Exception as e:
+                    update(tid, status="error",
+                           error=f"视频回传失败: {e}。请确认 EAS 返回的 result 是 OSS 可下载 URL。")
+                    return
             finally:
-                ticker.stop()
-            remote = res.get("video_url")
-            if not remote:
-                update(tid, status="error",
-                       error="HeyGem 未返回视频地址。请确认 EAS 容器入口 serve_oss.py 已部署（结果回传 OSS）。")
-                return
-            try:
-                # remote 为 OSS 签名 URL 或公网直链，拉回本地 storage
-                oss.download_url(remote, out)
-            except Exception as e:
-                update(tid, status="error",
-                       error=f"视频回传失败: {e}。请确认 EAS 返回的 result 是 OSS 可下载 URL。")
-                return
+                # 清理 OSS 中转副本：输入音频/形象 + 已下载回本地的输出视频；本地文件不动
+                for k in in_keys:
+                    oss.delete_object(k)
+                if out_key:
+                    oss.delete_object(out_key)
             poster_path = avatar_path  # 用上传形象作封面
             conn = db.get_conn()
             cur = conn.cursor()
@@ -788,13 +901,38 @@ def editing_generate(video_id: int = Form(...),
     tid = create_task("editing", user["id"])
 
     def work():
-        update(tid, progress=20, status="running")
-        time.sleep(0.3)
+        update(tid, progress=5, status="running")
         out = os.path.join(STORAGE_DIR, "edits", f"e{user['id']}_{int(time.time()*1000)}.mp4")
-        res = mu.edit_video(in_path, poster_path, options, audio_path, out, script_text)
-        update(tid, progress=85)
+
+        def on_progress(p):
+            # edit_video 内部进度 0-100 映射到任务进度 10-85
+            update(tid, progress=10 + int(max(0, min(100, p)) * 0.75))
+
+        res = mu.edit_video(in_path, poster_path, options, audio_path, out, script_text,
+                            on_progress=on_progress)
+        update(tid, progress=90)
         conn = db.get_conn()
         cur = conn.cursor()
+        # —— 剪辑去重：重剪同一条视频即覆盖旧版（重剪=对上一版不满意）。
+        # 新片生成成功后，清掉该 video_id 下所有旧剪辑成品（成片 + 中途产物），再入库最新一条。
+        # 中途产物含 _bgm.wav / _subs.ass / _base.mp4；_frame0.jpg 为封面底图，保留不删。 ——
+        if res.get("video_path"):
+            _old = conn.execute(
+                "SELECT file_path FROM edits WHERE video_id=? AND user_id=? AND status='done'",
+                (video_id, user["id"])).fetchall()
+            for _o in _old:
+                _ofp = os.path.join(STORAGE_DIR, (_o["file_path"] or "").replace("/", os.sep)) \
+                    if _o["file_path"] else None
+                if not _ofp:
+                    continue
+                for _suf in ("", "_bgm.wav", "_subs.ass", "_base.mp4"):
+                    _p = (_ofp[:-4] + _suf) if _suf else _ofp
+                    try:
+                        if os.path.exists(_p):
+                            os.remove(_p)
+                    except Exception:
+                        pass
+            cur.execute("DELETE FROM edits WHERE video_id=? AND user_id=?", (video_id, user["id"]))
         cur.execute("INSERT INTO edits(user_id,video_id,options,file_path,note,status,created_at) VALUES(?,?,?,?,?,?,?)",
                     (user["id"], video_id, str(options), _rel(res.get("video_path")) if res.get("video_path") else "",
                      res.get("note", ""), "done", _now()))
@@ -853,9 +991,34 @@ def cover_generate(edit_id: int = Form(...), style: str = Form("大字标题型"
     if not e:
         raise HTTPException(400, "剪辑结果不存在")
     if not title:
-        title = "爆款短视频"
+        title = "我的短视频"
+    # 推导剪辑成片首帧（命名约定：<视频名>_frame0.jpg），供封面当人物/场景底图。
+    # 剪辑时已存好则直接命中；存量视频首次生成时实时截一帧并缓存，之后直接命中。
+    frame_path = None
+    vp = e["file_path"]
+    if vp:
+        abs_vp = os.path.join(STORAGE_DIR, vp)
+        cand = os.path.splitext(abs_vp)[0] + "_frame0.jpg"
+        if os.path.exists(cand):
+            frame_path = cand
+        elif os.path.exists(abs_vp):
+            frame_path = mu._save_frame0(abs_vp)
     out = os.path.join(STORAGE_DIR, "covers", f"c{user['id']}_{int(time.time()*1000)}.jpg")
-    mu.make_cover(style, title, subtitle, out)
+    # 推导用户海报装饰层：固定目录 storage/covers/templates/，优先 poster.png/jpg，否则取目录首个图片
+    poster_path = None
+    tdir = os.path.join(STORAGE_DIR, "covers", "templates")
+    if os.path.isdir(tdir):
+        for fn in ("poster.png", "poster.jpg", "poster.jpeg"):
+            c = os.path.join(tdir, fn)
+            if os.path.exists(c):
+                poster_path = c
+                break
+        if not poster_path:
+            for f in sorted(os.listdir(tdir)):
+                if f.lower().endswith((".png", ".jpg", ".jpeg")):
+                    poster_path = os.path.join(tdir, f)
+                    break
+    mu.make_cover(style, title, subtitle, out, frame_path, poster_path)
     conn = db.get_conn()
     cur = conn.cursor()
     cur.execute("INSERT INTO covers(user_id,edit_id,style,title,file_path,status,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -863,6 +1026,16 @@ def cover_generate(edit_id: int = Form(...), style: str = Form("大字标题型"
     cid = cur.lastrowid
     conn.commit(); conn.close()
     return {"cover_id": cid, "url": "/files/" + _rel(out), "style": style, "title": title}
+
+
+@api.get("/covers/{cid}")
+def cover_get(cid: int, user=Depends(get_user)):
+    conn = db.get_conn()
+    c = conn.execute("SELECT * FROM covers WHERE id=? AND user_id=?", (cid, user["id"])).fetchone()
+    conn.close()
+    if not c:
+        raise HTTPException(404, "封面不存在")
+    return {"cover_id": cid, "url": "/files/" + c["file_path"], "style": c["style"], "title": c["title"]}
 
 
 # ============ 发布 ============

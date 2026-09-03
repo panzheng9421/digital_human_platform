@@ -108,3 +108,22 @@ def download_url(url: str, out_path: str, timeout: int = 600) -> str:
                 break
             f.write(chunk)
     return out_path
+
+
+def object_key_from_url(url: str) -> str:
+    """从签名 URL / 公网直链解析 object_key（用于事后清理中转临时对象）。
+
+    签名 URL 形如 https://bucket.oss-cn-xxx.aliyuncs.com/key?OSSAccessKeyId=...，
+    公网直链形如 https://bucket.oss-cn-xxx.aliyuncs.com/key。均取 path 去前导 /。
+    """
+    from urllib.parse import urlparse, unquote
+    return unquote(urlparse(url).path).lstrip("/")
+
+
+def delete_object(object_key: str) -> None:
+    """删除 OSS 对象（清理中转临时文件）。失败时仅打印警告，不影响主流程。"""
+    try:
+        _get_bucket().delete_object(object_key)
+        print(f"[oss] 已清理中转对象: {object_key}")
+    except Exception as e:
+        print(f"[oss] 清理中转对象失败(可忽略): {object_key} -> {e}")
