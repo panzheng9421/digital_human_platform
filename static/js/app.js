@@ -1,5 +1,5 @@
 // ===== 全局状态（跨页面传递：文案/音频/视频/剪辑/封面 id） =====
-const STATE = { script_id: null, audio_id: null, video_id: null, edit_id: null, cover_id: null };
+const STATE = { script_id: null, audio_id: null, video_id: null, edit_id: null, cover_id: null, cover_title: "", cover_subtitle: "" };
 
 // 刷新浏览器后内存 STATE 会清空，导致点导航跳回的页面（如文案页）丢失上下文、要重选素材。
 // 持久化到 localStorage，进入页面即恢复，兜底 beforeunload 保存。
@@ -566,6 +566,8 @@ async function doRewrite(sid) {
   try {
     const r = await API.postForm("/scripts/rewrite", { script_id: sid, type_: _rewriteState.type, persona: _rewriteState.persona });
     _rewriteState.generated = r.generated_text;
+    STATE.cover_title = r.cover_title || "";
+    STATE.cover_subtitle = r.cover_subtitle || "";
     showPreview(r.generated_text, sid, r);
   } catch (e) { toast(e.message); }
   finally {
@@ -1334,16 +1336,19 @@ async function pageCover(app) {
   if (STATE.script_id) {
     try {
       const s = await API.get("/scripts/" + STATE.script_id);
-      title = (s.title || "").replace(/^【[^】]+】\s*/, "").replace(/^[^：:]{1,10}[视角][：:]\s*/, "").trim();
-    } catch (e) {}
-  }
+        title = (s.title || "").replace(/^【[^】]+】\s*/, "").replace(/^[^：:]{1,10}[视角][：:]\s*/, "").trim();
+      } catch (e) {}
+    }
+    // 优先用改写阶段生成的封面标题/副标题，没生成过则回退到清洗后的文案标题
+    let coverTitle0 = STATE.cover_title || title;
+    let coverSub0 = STATE.cover_subtitle || "";
   let sel = styles[0];
   app.innerHTML = `<div class="wrap">
     <div class="card"><h2>标题封面</h2><div class="sub">选择封面风格，一键生成</div>
       <label>封面风格</label>
       <div class="chips" id="styleChips">${styles.map(s => `<div class="chip ${s === sel ? "on" : ""}" data-s="${s}">${s}</div>`).join("")}</div>
-      <label>封面标题</label><input id="coverTitle" value="${esc(title)}" />
-      <label>副标题（可选）</label><input id="coverSub" placeholder="如：老板亲测" />
+      <label>封面标题</label><input id="coverTitle" value="${esc(coverTitle0)}" />
+      <label>副标题（可选）</label><input id="coverSub" value="${esc(coverSub0)}" placeholder="如：老板亲测" />
       <button class="btn" style="margin-top:18px" id="btnCover">生成封面</button>
       <div id="coverResult" style="margin-top:16px"></div>
     </div>

@@ -247,6 +247,7 @@ def rewrite(script_id: int = Form(...), type_: str = Form("解题型"),
                  (type_, persona, res["generated_text"], res["title"], script_id))
     conn.commit(); conn.close()
     return {"generated_text": res["generated_text"], "title": res["title"],
+            "cover_title": res.get("cover_title", ""), "cover_subtitle": res.get("cover_subtitle", ""),
             "source": res.get("source", "template"), "note": res.get("note", "")}
 
 

@@ -105,6 +105,29 @@ def _topic_snippet(text: str, max_len: int = 12) -> str:
     return text[:cut].rstrip(boundaries)
 
 
+def _parse_rewrite_json(raw: str, target_len: int):
+    """把 LLM 返回的 JSON（{script, cover_title, cover_subtitle}）解析出来。
+    兼容 ```json 围栏与纯文本回退；script 走字数兜底截断，封面字段缺失则为空。"""
+    import json as _json
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        nl = s.find("\n")
+        if nl != -1:
+            s = s[nl + 1:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+        s = s.strip()
+    try:
+        obj = _json.loads(s)
+        script = obj.get("script") or raw
+        cover_title = (obj.get("cover_title") or "").strip()
+        cover_subtitle = (obj.get("cover_subtitle") or "").strip()
+    except Exception:
+        script, cover_title, cover_subtitle = raw, "", ""
+    script, note = _clamp_text(script, target_len + REWRITE_WORD_TOLERANCE)
+    return script, cover_title, cover_subtitle, note
+
+
 def _key_points(text: str, n=3):
     sents = _split_sentences(text)
     if not sents:
@@ -175,7 +198,11 @@ def _rewrite_template(original: str, type_: str, persona: str) -> dict:
     generated, note = _clamp_text(generated, _target_len(original) + REWRITE_WORD_TOLERANCE)
     topic = _topic_snippet(points[0], 12) if points else "干货分享"
     title = f"【{type_}】{persona}视角：{topic}"
-    res = {"title": title, "generated_text": generated}
+    # 封面标题/副标题：短视频封面要短、有冲突感，能勾人点进来；副标题补一句利益点或悬念
+    cover_title = (points[0][:14] if points else topic).strip()
+    cover_subtitle = f"{persona}亲测，少走弯路"
+    res = {"title": title, "generated_text": generated,
+           "cover_title": cover_title, "cover_subtitle": cover_subtitle}
     if note:
         res["note"] = note
     return res
@@ -200,7 +227,7 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
             "3) 严格遵循指定'人设语气'；4) 按指定'写法结构'组织内容；5) 结尾自然收束，不堆砌营销话术；\n"
             f"6) 改写后的口播稿字数（去除空白字符后的连续字符数）必须严格不超过 {target_len} 字，"
             f"并尽量接近该字数，不要为凑字数硬加内容；\n"
-            "7) 只输出改写后的口播文案正文，不要任何解释、不要加书名号或引号包裹。\n"
+            "7) 请用 JSON 格式输出，不要任何额外解释。结构：{\"script\": \"改写后的口播文案正文（不要书名号或引号包裹）\", \"cover_title\": \"短视频封面大标题，不超过14字，有冲突感、能勾人点进来（例如'千万别再这样做了'）\", \"cover_subtitle\": \"封面副标题，不超过16字，补一句利益点或悬念，可留空字符串\"}。\n"
             "8) 口播断句友好（重要）：语音合成模型容易在「动词 + 方位词」之间误断句，"
             "例如把'修车路上'念成'修车。路上'、把'开车车上'念成'开车。车上'。为避免这种尴尬断句，"
             "输出时请把这类组合写成带'的'的连读形式：'修车路上'→'修车的路上'、'开车车上'→'开车的车上'；"
@@ -215,12 +242,16 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
             f"{compress_hint}\n"
             f"原始文案：\n{original}\n\n请输出改写后的口播文案："
         )
-        generated = _call_deepseek(system, user)
-        # 硬性兜底：无论如何不能超过目标字数 + 容差（正常改写不会触发）
-        generated, note = _clamp_text(generated, target_len + REWRITE_WORD_TOLERANCE)
+        raw = _call_deepseek(system, user)
+        generated, cover_title, cover_subtitle, note = _parse_rewrite_json(raw, target_len)
+        # LLM 没给封面标题时，回退到原文主题词
+        if not cover_title:
+            cover_title = _topic_snippet(original, 12) or "干货分享"
         topic = _topic_snippet(original, 12) or "干货分享"
         title = f"【{type_}】{persona}视角：{topic}"
-        return {"title": title, "generated_text": generated, "source": "llm", "note": note}
+        return {"title": title, "generated_text": generated,
+                "cover_title": cover_title, "cover_subtitle": cover_subtitle,
+                "source": "llm", "note": note}
     except Exception as e:
         print(f"[rewrite] LLM 不可用，回退规则模板：{e}")
         res = _rewrite_template(original, type_, persona)
