@@ -1353,6 +1353,116 @@ def _save_frame0(video_path: str, out_frame_path: str = None):
     return jpg if os.path.exists(jpg) else None
 
 
+def _round_corner(im, rad):
+    """给 RGBA 图片加圆角蒙版。"""
+    circle = Image.new("L", (rad * 2, rad * 2), 0)
+    draw = ImageDraw.Draw(circle)
+    draw.ellipse((0, 0, rad * 2, rad * 2), fill=255)
+    alpha = Image.new("L", im.size, 255)
+    w, h = im.size
+    alpha.paste(circle.crop((0, 0, rad, rad)), (0, 0))
+    alpha.paste(circle.crop((rad, 0, rad * 2, rad)), (w - rad, 0))
+    alpha.paste(circle.crop((0, rad, rad, rad * 2)), (0, h - rad))
+    alpha.paste(circle.crop((rad, rad, rad * 2, rad * 2)), (w - rad, h - rad))
+    im.putalpha(alpha)
+    return im
+
+
+def _make_cover_bold_top(im, title, subtitle, poster_path=None):
+    """参考抖音爆款封面：人物底图 + 顶部大标题 + 右侧强调字 + 底部小图。"""
+    W, H = im.size
+    # 顶部暗色渐变条，保证标题在复杂背景上可读
+    grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(grad)
+    for i in range(420):
+        a = int(175 * (1 - i / 420))
+        gd.line([(0, i), (W, i)], fill=(0, 0, 0, a))
+    im = Image.alpha_composite(im.convert("RGBA"), grad).convert("RGB")
+    d = ImageDraw.Draw(im)
+
+    # 主标题：根据字数自适应字号，粉色填充 + 白色描边
+    t_len = len(title)
+    if t_len <= 8:
+        big_size = 130
+        max_chars = 8
+    elif t_len <= 14:
+        big_size = 112
+        max_chars = 10
+    elif t_len <= 22:
+        big_size = 96
+        max_chars = 12
+    else:
+        big_size = 84
+        max_chars = 14
+    f_big = _pil_font(big_size)
+    lines = _wrap(title, max_chars)[:2]
+    line_h = int(big_size * 1.18)
+    y = 75
+    for ln in lines:
+        try:
+            bbox = d.textbbox((0, 0), ln, font=f_big)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(ln) * big_size
+        x = (W - tw) // 2
+        _draw_text_outline(d, (x, y), ln, f_big, fill=(255, 105, 180), outline=(255, 255, 255), width=3)
+        y += line_h
+
+    # 副标题：白色填充 + 黑色描边
+    if subtitle:
+        f_sub = _pil_font(52)
+        sub_lines = _wrap(subtitle, 16)[:2]
+        sy = y + 18
+        for sl in sub_lines:
+            try:
+                bbox = d.textbbox((0, 0), sl, font=f_sub)
+                sw = bbox[2] - bbox[0]
+            except Exception:
+                sw = len(sl) * 26
+            sx = (W - sw) // 2
+            _draw_text_outline(d, (sx, sy), sl, f_sub, fill=(255, 255, 255), outline=(0, 0, 0), width=2)
+            sy += 64
+
+    # 右侧强调字：取标题末尾 2-4 字，旋转 -12 度，黄色填充 + 黑色描边
+    emph = title[-4:] if len(title) >= 4 else title
+    if emph and len(emph) >= 2:
+        f_emph = _pil_font(128)
+        try:
+            bbox = d.textbbox((0, 0), emph, font=f_emph)
+            ew, eh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            ew, eh = len(emph) * 128, 128
+        margin = 30
+        txt = Image.new("RGBA", (ew + margin * 2, eh + margin * 2), (0, 0, 0, 0))
+        td = ImageDraw.Draw(txt)
+        _draw_text_outline(td, (margin, margin), emph, f_emph, fill=(255, 220, 0), outline=(0, 0, 0), width=4)
+        txt_rot = txt.rotate(-12, expand=True, resample=Image.BICUBIC)
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        px = W - txt_rot.width - 50
+        py = (H - txt_rot.height) // 2 + 80
+        layer.paste(txt_rot, (px, py), txt_rot)
+        im = Image.alpha_composite(im.convert("RGBA"), layer).convert("RGB")
+
+    # 底部小图：poster 缩放、圆角、底部居中叠加
+    if poster_path and os.path.exists(poster_path):
+        try:
+            pim = Image.open(poster_path).convert("RGBA")
+            pw = int(W * 0.72)
+            ph = int(pw * pim.height / pim.width)
+            if ph > 520:
+                ph = 520
+                pw = int(ph * pim.width / pim.height)
+            pim = pim.resize((pw, ph), Image.LANCZOS)
+            pim = _round_corner(pim, 24)
+            px, py = (W - pw) // 2, H - ph - 70
+            layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            layer.paste(pim, (px, py), pim)
+            im = Image.alpha_composite(im.convert("RGBA"), layer).convert("RGB")
+        except Exception:
+            pass
+    return im
+
+
 def make_cover(style: str, title: str, subtitle: str, out_path: str, frame_path: str = None, poster_path: str = None) -> str:
     """用 Pillow 生成竖版封面（9:16 = 1080x1920）。
     优先用视频首帧当底图（真实人物+场景，等比缩放居中裁剪），再叠加大标题；无首帧时纯色背景兜底。"""
@@ -1379,69 +1489,68 @@ def make_cover(style: str, title: str, subtitle: str, out_path: str, frame_path:
             im = None
     if im is None:
         im = Image.new("RGB", (W, H), bg)
-    # 叠用户海报装饰层（半透明边框/小元素），首帧之上、标题之下
-    if poster_path and os.path.exists(poster_path):
-        try:
-            pim = Image.open(poster_path).convert("RGBA").resize((W, H), Image.LANCZOS)
-            im = Image.alpha_composite(im.convert("RGBA"), pim).convert("RGB")
-        except Exception:
-            pass
-    ACCENT = (255, 214, 0)  # 网感亮黄
-    if use_frame:
-        # 仅底部标题板压暗（保证大字可读），不全局压暗以免弄脏海报装饰
-        panel_top = H - 580
-        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        dm = ImageDraw.Draw(overlay)
-        dm.rectangle([0, panel_top, W, H], fill=(0, 0, 0, 175))       # 底部标题板
-        im = Image.alpha_composite(im.convert("RGBA"), overlay).convert("RGB")
-        d = ImageDraw.Draw(im)
-        d.rectangle([0, panel_top, W, panel_top + 14], fill=ACCENT)
-    else:
-        ImageDraw.Draw(im).rectangle([0, H - 480, W, H],
-                                     fill=fg if isinstance(fg, tuple) and len(fg) == 3 else (20, 20, 24))
-    d = ImageDraw.Draw(im)
     title = _clean_cover_title(title)[:30]
-    # 根据字数自适应字号：字多就小一点，字少就大一点
-    t_len = len(title)
-    if t_len <= 10:
-        big_size, max_chars, line_h, max_lines = 120, 9, 145, 2
-    elif t_len <= 20:
-        big_size, max_chars, line_h, max_lines = 108, 10, 128, 3
+    if style == "大字标题型":
+        # 新爆款风格：顶部大标题 + 右侧强调字 + 底部小图
+        im = _make_cover_bold_top(im, title, subtitle, poster_path)
     else:
-        big_size, max_chars, line_h, max_lines = 90, 12, 108, 4
-    f_big = _pil_font(big_size)
-    f_small = _pil_font(48)
-    lines = _wrap(title, max_chars)
-    lines = lines[:max_lines]
-    # 标题整体居中
-    total_h = len(lines) * line_h
-    panel_h = 580 if use_frame else 480
-    y = H - panel_h + (panel_h - total_h) // 2 - 30
-    for ln in lines:
-        try:
-            bbox = d.textbbox((0, 0), ln, font=f_big)
-            tw = bbox[2] - bbox[0]
-        except Exception:
-            tw = len(ln) * big_size
-        x = (W - tw) // 2
-        _draw_text_outline(d, (x, y), ln, f_big, ACCENT, outline=(0, 0, 0), width=4)
-        y += line_h
-    if subtitle:
-        sub_lines = _wrap(subtitle, 16)[:2]
-        sy = y + 10
-        for sl in sub_lines:
+        # 其他风格：整体叠海报装饰层 + 底部标题板
+        if poster_path and os.path.exists(poster_path):
             try:
-                bbox = d.textbbox((0, 0), sl, font=f_small)
-                sw = bbox[2] - bbox[0]
+                pim = Image.open(poster_path).convert("RGBA").resize((W, H), Image.LANCZOS)
+                im = Image.alpha_composite(im.convert("RGBA"), pim).convert("RGB")
             except Exception:
-                sw = len(sl) * 24
-            sx = (W - sw) // 2
-            _draw_text_outline(d, (sx, sy), sl, f_small, (245, 245, 245), outline=(0, 0, 0), width=2)
-            sy += 58
-    # 顶部小标签 + 亮色下划线装饰
-    tag_color = (255, 255, 255) if use_frame else (tuple(fg) if isinstance(fg, tuple) else (200, 200, 200))
-    d.text((60, 70), "# " + style, font=f_small, fill=tag_color)
-    d.rectangle([60, 70 + 60, 60 + 120, 70 + 66], fill=ACCENT)
+                pass
+        ACCENT = (255, 214, 0)  # 网感亮黄
+        if use_frame:
+            panel_top = H - 580
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            dm = ImageDraw.Draw(overlay)
+            dm.rectangle([0, panel_top, W, H], fill=(0, 0, 0, 175))       # 底部标题板
+            im = Image.alpha_composite(im.convert("RGBA"), overlay).convert("RGB")
+            d = ImageDraw.Draw(im)
+            d.rectangle([0, panel_top, W, panel_top + 14], fill=ACCENT)
+        else:
+            ImageDraw.Draw(im).rectangle([0, H - 480, W, H],
+                                         fill=fg if isinstance(fg, tuple) and len(fg) == 3 else (20, 20, 24))
+        d = ImageDraw.Draw(im)
+        t_len = len(title)
+        if t_len <= 10:
+            big_size, max_chars, line_h, max_lines = 120, 9, 145, 2
+        elif t_len <= 20:
+            big_size, max_chars, line_h, max_lines = 108, 10, 128, 3
+        else:
+            big_size, max_chars, line_h, max_lines = 90, 12, 108, 4
+        f_big = _pil_font(big_size)
+        f_small = _pil_font(48)
+        lines = _wrap(title, max_chars)[:max_lines]
+        total_h = len(lines) * line_h
+        panel_h = 580 if use_frame else 480
+        y = H - panel_h + (panel_h - total_h) // 2 - 30
+        for ln in lines:
+            try:
+                bbox = d.textbbox((0, 0), ln, font=f_big)
+                tw = bbox[2] - bbox[0]
+            except Exception:
+                tw = len(ln) * big_size
+            x = (W - tw) // 2
+            _draw_text_outline(d, (x, y), ln, f_big, ACCENT, outline=(0, 0, 0), width=4)
+            y += line_h
+        if subtitle:
+            sub_lines = _wrap(subtitle, 16)[:2]
+            sy = y + 10
+            for sl in sub_lines:
+                try:
+                    bbox = d.textbbox((0, 0), sl, font=f_small)
+                    sw = bbox[2] - bbox[0]
+                except Exception:
+                    sw = len(sl) * 24
+                sx = (W - sw) // 2
+                _draw_text_outline(d, (sx, sy), sl, f_small, (245, 245, 245), outline=(0, 0, 0), width=2)
+                sy += 58
+        tag_color = (255, 255, 255) if use_frame else (tuple(fg) if isinstance(fg, tuple) else (200, 200, 200))
+        d.text((60, 70), "# " + style, font=f_small, fill=tag_color)
+        d.rectangle([60, 70 + 60, 60 + 120, 70 + 66], fill=ACCENT)
     im.save(out_path, quality=90)
     return out_path
 
