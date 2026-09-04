@@ -25,6 +25,11 @@
 > 接真实服务时，**只改 `app/config.py` 里的环境变量**，前端和流程零改动。
 
 ---
+## 下面是作品展示
+
+https://img.triview.cn/ai/video/digital_human_anuo.mp4
+
+---
 
 ## 全流程一览
 
