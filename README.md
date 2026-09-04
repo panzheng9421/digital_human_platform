@@ -30,16 +30,12 @@
 
 > 由 `digital_human_platform` 一键产出的口播视频样片：文案改写 → CosyVoice 配音 → HeyGem 数字人 → 自动剪辑。
 
-<!-- 主播放源：GitHub issue 评论上传拿到的 user-attachments（ID 不能失效） -->
 <video
-  src="https://github.com/user-attachments/assets/ead57555-7930-44dc-bcca-987ccb42ddfb"
+  src="https://github.com/user-attachments/assets/6712c190-d4ab-49c9-ae00-8dfb299e68fd"
   controls
   width="100%"
   preload="metadata"
   style="max-width:720px; border-radius:8px;">
-  <!-- 兜底源：自部署 CDN；浏览器自动按顺序找能播的 -->
-  <source src="https://img.triview.cn/ai/video/digital_human_anuo.mp4" type="video/mp4">
-  你的浏览器不支持 HTML5 视频播放，请<a href="https://img.triview.cn/ai/video/digital_human_anuo.mp4">点此下载查看</a>。
 </video>
 
 **查看完整版**：[digital_human_anuo.mp4](https://img.triview.cn/ai/video/digital_human_anuo.mp4)（直链下载 / 新窗口播放）
