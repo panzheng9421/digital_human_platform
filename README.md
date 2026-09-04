@@ -27,7 +27,7 @@
 ---
 ## 下面是作品展示
 
-https://github.com/user-attachments/assets/ead57555-7930-44dc-bcca-987ccb42ddfb
+<source src="https://img.triview.cn/ai/video/digital_human_anuo.mp4" type="video/mp4">
 
 ---
 
