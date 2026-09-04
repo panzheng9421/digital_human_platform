@@ -1,5 +1,5 @@
 // ===== 全局状态（跨页面传递：文案/音频/视频/剪辑/封面 id） =====
-const STATE = { script_id: null, audio_id: null, video_id: null, edit_id: null, cover_id: null, cover_title: "", cover_subtitle: "" };
+const STATE = { script_id: null, audio_id: null, video_id: null, edit_id: null, cover_id: null, cover_url: "", cover_title: "", cover_subtitle: "" };
 
 // 刷新浏览器后内存 STATE 会清空，导致点导航跳回的页面（如文案页）丢失上下文、要重选素材。
 // 持久化到 localStorage，进入页面即恢复，兜底 beforeunload 保存。
@@ -568,6 +568,7 @@ async function doRewrite(sid) {
     _rewriteState.generated = r.generated_text;
     STATE.cover_title = r.cover_title || "";
     STATE.cover_subtitle = r.cover_subtitle || "";
+    saveState();
     showPreview(r.generated_text, sid, r);
   } catch (e) { toast(e.message); }
   finally {
@@ -1343,14 +1344,19 @@ async function pageCover(app) {
     let coverTitle0 = STATE.cover_title || title;
     let coverSub0 = STATE.cover_subtitle || "";
   let sel = styles[0];
-  app.innerHTML = `<div class="wrap">
-    <div class="card"><h2>标题封面</h2><div class="sub">选择封面风格，一键生成</div>
+  app.innerHTML = `<div class="wrap cols-rewrite">
+    <div class="card dh-card">
+      <h2>标题封面</h2><div class="sub">选择封面风格，一键生成</div>
       <label>封面风格</label>
       <div class="chips" id="styleChips">${styles.map(s => `<div class="chip ${s === sel ? "on" : ""}" data-s="${s}">${s}</div>`).join("")}</div>
       <label>封面标题</label><input id="coverTitle" value="${esc(coverTitle0)}" />
       <label>副标题（可选）</label><input id="coverSub" value="${esc(coverSub0)}" placeholder="如：老板亲测" />
       <button class="btn" style="margin-top:18px" id="btnCover">生成封面</button>
-      <div id="coverResult" style="margin-top:16px"></div>
+    </div>
+
+    <div class="card" style="margin-top:0">
+      <h2 style="font-size:16px">封面预览</h2>
+      <div id="coverResult"><div class="muted" style="padding:24px 0;text-align:center">点击左侧生成封面，结果会出现在这里</div></div>
     </div>
   </div>`;
   bindLogout();
@@ -1359,16 +1365,27 @@ async function pageCover(app) {
     document.getElementById("styleChips").querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
     c.classList.add("on");
   });
+  const renderPreview = (cid, url) => {
+    document.getElementById("coverResult").innerHTML = `
+      <div style="text-align:center">
+        <img class="media" style="max-width:280px;border-radius:12px" src="${url}" />
+        <button class="btn sm" style="margin-top:14px" id="btnToPub">满意 前往发布</button>
+      </div>`;
+    document.getElementById("btnToPub").onclick = () => go(`#/publish?cid=${cid}`);
+  };
+  // 刷新/切回页面：如果 STATE.edit_id 与当前 eid 一致，且已有 cover_url，自动恢复右侧预览
+  if (STATE.edit_id && String(STATE.edit_id) === String(eid) && STATE.cover_url) {
+    renderPreview(STATE.cover_id, STATE.cover_url);
+  }
+
   document.getElementById("btnCover").onclick = async () => {
     try {
       const r = await API.postForm("/covers/generate",
         { edit_id: eid, style: sel, title: coverTitle.value, subtitle: coverSub.value });
       STATE.cover_id = r.cover_id;
-      document.getElementById("coverResult").innerHTML = `
-        <div class="card" style="margin:0"><h2 style="font-size:16px">封面生成完成</h2>
-          <img class="media" style="max-width:240px" src="${r.url}" />
-          <button class="btn sm" id="btnToPub">满意 前往发布</button></div>`;
-      document.getElementById("btnToPub").onclick = () => go(`#/publish?cid=${r.cover_id}`);
+      STATE.cover_url = r.url;
+      saveState();
+      renderPreview(r.cover_id, r.url);
     } catch (e) { toast(e.message); }
   };
 }

@@ -107,8 +107,10 @@ def _topic_snippet(text: str, max_len: int = 12) -> str:
 
 def _parse_rewrite_json(raw: str, target_len: int):
     """把 LLM 返回的 JSON（{script, cover_title, cover_subtitle}）解析出来。
-    兼容 ```json 围栏与纯文本回退；script 走字数兜底截断，封面字段缺失则为空。"""
+    兼容 ```json 围栏与纯文本回退；script 走字数兜底截断，封面字段缺失则为空。
+    若 JSON 整体解析失败，仍尝试用正则把 cover_title/cover_subtitle 抠出来，尽量不空手而归。"""
     import json as _json
+    import re as _re
     s = (raw or "").strip()
     if s.startswith("```"):
         nl = s.find("\n")
@@ -117,13 +119,20 @@ def _parse_rewrite_json(raw: str, target_len: int):
         if s.rstrip().endswith("```"):
             s = s.rstrip()[:-3]
         s = s.strip()
+    script, cover_title, cover_subtitle = raw, "", ""
     try:
         obj = _json.loads(s)
         script = obj.get("script") or raw
         cover_title = (obj.get("cover_title") or "").strip()
         cover_subtitle = (obj.get("cover_subtitle") or "").strip()
     except Exception:
-        script, cover_title, cover_subtitle = raw, "", ""
+        # 整体 JSON 解析失败时，尽量抢救封面字段
+        m_title = _re.search(r'"cover_title"\s*:\s*"([^"]*)"', raw or "")
+        m_sub = _re.search(r'"cover_subtitle"\s*:\s*"([^"]*)"', raw or "")
+        if m_title:
+            cover_title = m_title.group(1).strip()
+        if m_sub:
+            cover_subtitle = m_sub.group(1).strip()
     script, note = _clamp_text(script, target_len + REWRITE_WORD_TOLERANCE)
     return script, cover_title, cover_subtitle, note
 
@@ -199,8 +208,8 @@ def _rewrite_template(original: str, type_: str, persona: str) -> dict:
     topic = _topic_snippet(points[0], 12) if points else "干货分享"
     title = f"【{type_}】{persona}视角：{topic}"
     # 封面标题/副标题：短视频封面要短、有冲突感，能勾人点进来；副标题补一句利益点或悬念
-    cover_title = (points[0][:14] if points else topic).strip()
-    cover_subtitle = f"{persona}亲测，少走弯路"
+    cover_title = _topic_snippet(points[0], 9) if points else _topic_snippet(topic, 9)
+    cover_subtitle = _topic_snippet(f"{persona}亲测，少走弯路", 16)
     res = {"title": title, "generated_text": generated,
            "cover_title": cover_title, "cover_subtitle": cover_subtitle}
     if note:
@@ -223,12 +232,15 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
                              f"不要逐句复述，也不要为了凑字数硬加内容。\n")
         system = (
             "你是短视频口播文案改写助手。任务：把用户给的原始口播文案，改写成一篇新的短视频口播稿。\n"
-            "要求：1) 保留原文核心观点与关键信息，不得编造虚假数据或数字；2) 口语化、有节奏感，适合真人念出来；\n"
+            "【输出格式，必须严格遵守】请用 JSON 格式输出，不要任何额外解释、不要加 markdown 围栏。"
+            '结构：{"script": "改写后的口播文案正文（不要书名号或引号包裹）", '
+            '"cover_title": "短视频封面大标题，最多9个字（必须严格控制在9个汉字以内，含数字/字母），必须有冲突感、情绪感或悬念感，能勾人点进来（例如“千万别这样”、“95%人踩坑”），不要直接照搬原文开头", '
+            '"cover_subtitle": "封面副标题，不超过16字，补一句利益点、身份背书或悬念，可留空字符串"}\n'
+            "内容要求：1) 保留原文核心观点与关键信息，不得编造虚假数据或数字；2) 口语化、有节奏感，适合真人念出来；\n"
             "3) 严格遵循指定'人设语气'；4) 按指定'写法结构'组织内容；5) 结尾自然收束，不堆砌营销话术；\n"
             f"6) 改写后的口播稿字数（去除空白字符后的连续字符数）必须严格不超过 {target_len} 字，"
             f"并尽量接近该字数，不要为凑字数硬加内容；\n"
-            "7) 请用 JSON 格式输出，不要任何额外解释。结构：{\"script\": \"改写后的口播文案正文（不要书名号或引号包裹）\", \"cover_title\": \"短视频封面大标题，不超过14字，有冲突感、能勾人点进来（例如'千万别再这样做了'）\", \"cover_subtitle\": \"封面副标题，不超过16字，补一句利益点或悬念，可留空字符串\"}。\n"
-            "8) 口播断句友好（重要）：语音合成模型容易在「动词 + 方位词」之间误断句，"
+            "7) 口播断句友好（重要）：语音合成模型容易在「动词 + 方位词」之间误断句，"
             "例如把'修车路上'念成'修车。路上'、把'开车车上'念成'开车。车上'。为避免这种尴尬断句，"
             "输出时请把这类组合写成带'的'的连读形式：'修车路上'→'修车的路上'、'开车车上'→'开车的车上'；"
             "同理'XX店里 / XX家里 / XX学校 / XX车上 / XX路上'也优先写成'XX的店里'等连读形式。"
@@ -244,9 +256,14 @@ def rewrite(original: str, type_: str, persona: str) -> dict:
         )
         raw = _call_deepseek(system, user)
         generated, cover_title, cover_subtitle, note = _parse_rewrite_json(raw, target_len)
-        # LLM 没给封面标题时，回退到原文主题词
-        if not cover_title:
-            cover_title = _topic_snippet(original, 12) or "干货分享"
+        # 封面标题严格不超过 9 字；LLM 没给时从改写稿第一句取（比原文主题更贴近改写后的卖点）
+        if cover_title:
+            cover_title = _topic_snippet(cover_title, 9)
+        else:
+            first_line = re.split(r"[。！？\n]", generated)[0] if generated else ""
+            cover_title = _topic_snippet(first_line, 9) or _topic_snippet(original, 9) or "干货分享"
+        if cover_subtitle:
+            cover_subtitle = _topic_snippet(cover_subtitle, 16)
         topic = _topic_snippet(original, 12) or "干货分享"
         title = f"【{type_}】{persona}视角：{topic}"
         return {"title": title, "generated_text": generated,

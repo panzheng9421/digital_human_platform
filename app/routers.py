@@ -988,6 +988,10 @@ def cover_generate(edit_id: int = Form(...), style: str = Form("大字标题型"
                    title: str = Form(""), subtitle: str = Form(""), user=Depends(get_user)):
     conn = db.get_conn()
     e = conn.execute("SELECT * FROM edits WHERE id=? AND user_id=?", (edit_id, user["id"])).fetchone()
+    # 同 edit 旧封面（去重：渲染成功后才删旧留新，避免失败时丢掉可用旧封面）
+    _old_covers = conn.execute(
+        "SELECT file_path FROM covers WHERE edit_id=? AND user_id=?",
+        (edit_id, user["id"])).fetchall()
     conn.close()
     if not e:
         raise HTTPException(400, "剪辑结果不存在")
@@ -1020,8 +1024,21 @@ def cover_generate(edit_id: int = Form(...), style: str = Form("大字标题型"
                     poster_path = os.path.join(tdir, f)
                     break
     mu.make_cover(style, title, subtitle, out, frame_path, poster_path)
+    # 渲染成功（文件存在且非空）才删旧留新
+    if not (os.path.exists(out) and os.path.getsize(out) > 1000):
+        raise HTTPException(500, "封面渲染失败")
+    # 删除同 edit 旧封面文件（封面无中途产物，只有成片 jpg）
+    for _o in _old_covers:
+        _ofp = os.path.join(STORAGE_DIR, (_o["file_path"] or "").replace("/", os.sep)) \
+            if _o["file_path"] else None
+        if _ofp and os.path.exists(_ofp):
+            try:
+                os.remove(_ofp)
+            except Exception:
+                pass
     conn = db.get_conn()
     cur = conn.cursor()
+    cur.execute("DELETE FROM covers WHERE edit_id=? AND user_id=?", (edit_id, user["id"]))
     cur.execute("INSERT INTO covers(user_id,edit_id,style,title,file_path,status,created_at) VALUES(?,?,?,?,?,?,?)",
                 (user["id"], edit_id, style, title, _rel(out), "done", _now()))
     cid = cur.lastrowid

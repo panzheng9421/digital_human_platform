@@ -23,11 +23,19 @@ except Exception:
     _FFMPEG = None
 
 
-def _pil_font(size):
-    candidates = [
+def _pil_font(size, bold=False):
+    """加载 Pillow 字体。bold=True 时优先用系统粗体/黑体，让封面大标题更厚重。"""
+    candidates = []
+    if bold:
+        candidates = [
+            "C:/Windows/Fonts/HarmonyOS_Sans_SC_Bold.ttf",
+            "C:/Windows/Fonts/msyhbd.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+        ]
+    candidates += [
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsum.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -1369,7 +1377,7 @@ def _round_corner(im, rad):
 
 
 def _make_cover_bold_top(im, title, subtitle, poster_path=None):
-    """参考抖音爆款封面：人物底图 + 顶部大标题 + 右侧强调字 + 底部小图。"""
+    """参考抖音爆款封面：人物底图 + 顶部大标题 + 副标题 + 底部小图。"""
     W, H = im.size
     # 顶部暗色渐变条，保证标题在复杂背景上可读
     grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -1380,7 +1388,7 @@ def _make_cover_bold_top(im, title, subtitle, poster_path=None):
     im = Image.alpha_composite(im.convert("RGBA"), grad).convert("RGB")
     d = ImageDraw.Draw(im)
 
-    # 主标题：根据字数自适应字号，粉色填充 + 白色描边
+    # 主标题：根据字数自适应字号，抖音爆款黄填充 + 黑色描边
     t_len = len(title)
     if t_len <= 8:
         big_size = 130
@@ -1394,9 +1402,9 @@ def _make_cover_bold_top(im, title, subtitle, poster_path=None):
     else:
         big_size = 84
         max_chars = 14
-    f_big = _pil_font(big_size)
+    f_big = _pil_font(big_size, bold=True)
     lines = _wrap(title, max_chars)[:2]
-    line_h = int(big_size * 1.18)
+    line_h = int(big_size * 1.45)  # 3D 挤出会占一定空间，行距放大
     y = 75
     for ln in lines:
         try:
@@ -1405,12 +1413,12 @@ def _make_cover_bold_top(im, title, subtitle, poster_path=None):
         except Exception:
             tw = len(ln) * big_size
         x = (W - tw) // 2
-        _draw_text_outline(d, (x, y), ln, f_big, fill=(255, 105, 180), outline=(255, 255, 255), width=3)
+        _draw_text_3d(d, (x, y), ln, f_big, fill=(255, 220, 0), shadow=(0, 0, 0), depth=6)
         y += line_h
 
-    # 副标题：白色填充 + 黑色描边
+    # 副标题：白色填充 + 黑色描边（主标题是黄字 3D，副标题用白字区分层级）
     if subtitle:
-        f_sub = _pil_font(52)
+        f_sub = _pil_font(52, bold=True)
         sub_lines = _wrap(subtitle, 16)[:2]
         sy = y + 18
         for sl in sub_lines:
@@ -1420,28 +1428,8 @@ def _make_cover_bold_top(im, title, subtitle, poster_path=None):
             except Exception:
                 sw = len(sl) * 26
             sx = (W - sw) // 2
-            _draw_text_outline(d, (sx, sy), sl, f_sub, fill=(255, 255, 255), outline=(0, 0, 0), width=2)
+            _draw_text_outline(d, (sx, sy), sl, f_sub, fill=(255, 255, 255), outline=(0, 0, 0), width=3)
             sy += 64
-
-    # 右侧强调字：取标题末尾 2-4 字，旋转 -12 度，黄色填充 + 黑色描边
-    emph = title[-4:] if len(title) >= 4 else title
-    if emph and len(emph) >= 2:
-        f_emph = _pil_font(128)
-        try:
-            bbox = d.textbbox((0, 0), emph, font=f_emph)
-            ew, eh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except Exception:
-            ew, eh = len(emph) * 128, 128
-        margin = 30
-        txt = Image.new("RGBA", (ew + margin * 2, eh + margin * 2), (0, 0, 0, 0))
-        td = ImageDraw.Draw(txt)
-        _draw_text_outline(td, (margin, margin), emph, f_emph, fill=(255, 220, 0), outline=(0, 0, 0), width=4)
-        txt_rot = txt.rotate(-12, expand=True, resample=Image.BICUBIC)
-        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        px = W - txt_rot.width - 50
-        py = (H - txt_rot.height) // 2 + 80
-        layer.paste(txt_rot, (px, py), txt_rot)
-        im = Image.alpha_composite(im.convert("RGBA"), layer).convert("RGB")
 
     # 底部小图：poster 缩放、圆角、底部居中叠加
     if poster_path and os.path.exists(poster_path):
@@ -1614,6 +1602,18 @@ def _draw_text_outline(d, xy, text, font, fill, outline=(0, 0, 0), width=2):
                 continue
             d.text((x + dx, y + dy), text, font=font, fill=outline)
     d.text((x, y), text, font=font, fill=fill)
+
+
+def _draw_text_3d(d, xy, text, font, fill, shadow=(0, 0, 0), depth=6):
+    """3D 立体挤出字：参考抖音爆款封面的厚重块面字效果。
+    先按 depth 层向右下角错位绘制阴影/挤出面，再在最上层绘制主体色+描边。"""
+    x, y = xy
+    for i in range(depth, 0, -1):
+        # 挤出面由深到浅略有变化，但整体偏暗
+        shade = tuple(max(0, min(255, c - int(20 * (depth - i) / depth))) for c in shadow)
+        d.text((x + i, y + i), text, font=font, fill=shade)
+    # 最上层：主体色 + 黑色细描边，保证边缘锐利
+    _draw_text_outline(d, (x, y), text, font, fill=fill, outline=(0, 0, 0), width=2)
 
 
 def download_file(url: str, out_path: str, timeout: int = 300) -> str:
