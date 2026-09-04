@@ -27,8 +27,16 @@
 ---
 ## 下面是作品展示
 
-<source src="https://img.triview.cn/ai/video/digital_human_anuo.mp4" type="video/mp4">
+> 由 `digital_human_platform` 一键产出的口播视频样片：文案改写 → CosyVoice 配音 → HeyGem 数字人 → 自动剪辑。
 
+<video src="https://img.triview.cn/ai/video/digital_human_anuo.mp4"
+       controls
+       width="100%"
+       preload="metadata"
+       style="max-width:720px; border-radius:8px;">
+  <source src="https://img.triview.cn/ai/video/digital_human_anuo.mp4" type="video/mp4">
+  你的浏览器不支持 HTML5 视频播放，请<a href="https://img.triview.cn/ai/video/digital_human_anuo.mp4">点此下载</a>查看。
+</video>
 ---
 
 ## 全流程一览
