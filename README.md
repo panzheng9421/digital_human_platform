@@ -29,7 +29,13 @@
 
 > **由 `digital_human_platform` 一键产出的口播视频样片：文案改写 → CosyVoice 配音 → HeyGem 数字人 → 自动剪辑。**
 
-https://github.com/user-attachments/assets/a2721f88-5304-4473-bd58-4583f1773b74
+<video src="https://github.com/user-attachments/assets/ead57555-7930-44dc-bcca-987ccb42ddfb"
+       controls
+       width="100%"
+       preload="metadata"
+       style="max-width:720px; border-radius:8px;">
+</video>
+
 查看完整版，点击预览<a href="https://img.triview.cn/ai/video/digital_human_anuo.mp4">
 
 ---
