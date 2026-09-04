@@ -18,7 +18,12 @@ app.mount("/static", StaticFiles(directory=os.path.join(config.STATIC_DIR)), nam
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(config.STATIC_DIR, "index.html"))
+    # no-cache: 每次刷新都向服务器验证 index.html 新鲜度（304/200），
+    # 防止浏览器启发式缓存旧入口导致 ?v=N 版本号机制失效（样式"时好时坏"根因）。
+    return FileResponse(
+        os.path.join(config.STATIC_DIR, "index.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.on_event("startup")

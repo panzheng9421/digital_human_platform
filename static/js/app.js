@@ -13,6 +13,7 @@ function loadState() {
   } catch (e) {}
 }
 loadState();
+initTheme();
 window.addEventListener("beforeunload", saveState);
 
 
@@ -68,9 +69,10 @@ document.addEventListener("loadedmetadata", function (e) {
   if (v.tagName === "VIDEO") markVideoAspect(v);
 }, true);
 
-function toast(msg) {
+function toast(msg, type = "") {
   const t = document.createElement("div");
-  t.className = "toast"; t.textContent = msg;
+  t.className = "toast" + (type ? " " + type : "");
+  t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2600);
 }
@@ -110,14 +112,65 @@ async function genWithProgress(path, formObj, maskText) {
   }
 }
 
+const BRAND_LOGO_SVG = `<svg class="brand-logo" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="4" y="6" width="24" height="20" rx="5" stroke="currentColor" stroke-width="2.4"/><circle cx="13" cy="15" r="3.5" fill="currentColor"/><path d="M7 24c0-3.5 3-6 6-6s6 2.5 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/><path d="M21 14l6 3-6 3v-6z" fill="currentColor"/></svg>`;
+
+const THEME_TOGGLE_SVG = `<svg class="theme-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`;
+const THEME_TOGGLE_MOON_SVG = `<svg class="theme-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+
 function topbar(extra) {
-  const u = API.token ? "已登录" : "";
-  return `<div class="topbar"><div class="brand">数字人短视频智能体</div>
-    <div class="user">${extra || ""}<button class="btn ghost sm" id="logout">退出</button></div></div>`;
+  const theme = document.documentElement.getAttribute("data-theme") || "auto";
+  const isLight = document.documentElement.classList.contains("theme-light");
+  const icon = isLight ? THEME_TOGGLE_MOON_SVG : THEME_TOGGLE_SVG;
+  return `<div class="topbar"><div class="brand">${BRAND_LOGO_SVG}数字人短视频智能体</div>
+    <div class="user">${extra || ""}<button class="theme-toggle" id="themeToggle" title="切换主题">${icon}</button><button class="btn ghost sm" id="logout">退出</button></div></div>`;
 }
 function bindLogout() {
   const b = document.getElementById("logout");
   if (b) b.onclick = () => { API.token = null; go("#/login"); };
+}
+
+// ===== 主题切换 =====
+function applyTheme(mode) {
+  const m = mode || "auto";
+  const html = document.documentElement;
+  const sysLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  const light = m === "light" || (m !== "dark" && sysLight);
+  // 跟随系统(auto)：移除 data-theme 属性，让 CSS 的 html:not([data-theme]) + 媒体查询接管
+  // 否则（light/dark）显式写属性，优先级高于系统媒体查询
+  if (m === "auto") html.removeAttribute("data-theme");
+  else html.setAttribute("data-theme", m);
+  html.classList.toggle("theme-light", light);
+  html.classList.toggle("theme-dark", !light);
+  try { localStorage.setItem("dh-theme", m); } catch (e) {}
+}
+function updateThemeIcon() {
+  const b = document.getElementById("themeToggle");
+  if (!b) return;
+  const isLight = document.documentElement.classList.contains("theme-light");
+  b.innerHTML = isLight ? THEME_TOGGLE_MOON_SVG : THEME_TOGGLE_SVG;
+  b.title = isLight ? "切换深色主题" : "切换浅色主题";
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") || "auto";
+  const sysLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  const isLight = cur === "light" || (cur !== "dark" && sysLight);
+  applyTheme(isLight ? "dark" : "light");
+  updateThemeIcon();
+}
+function bindThemeToggle() {
+  const b = document.getElementById("themeToggle");
+  if (b) b.onclick = toggleTheme;
+}
+function initTheme() {
+  let saved = "auto";
+  try { saved = localStorage.getItem("dh-theme") || "auto"; } catch (e) {}
+  applyTheme(saved);
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+      const cur = document.documentElement.getAttribute("data-theme") || "auto";
+      if (cur === "auto") applyTheme("auto");
+    });
+  }
 }
 
 // ===== 路由 =====
@@ -149,12 +202,12 @@ function currentStepIndex(hash) {
 }
 
 const STEP_MAP = [
-  { title: "文案", icon: "📝", hash: "#/extract" },
-  { title: "配音", icon: "🎙️", hash: "#/dubbing" },
-  { title: "数字人", icon: "🧑", hash: "#/digital" },
-  { title: "剪辑", icon: "✂️", hash: "#/editing" },
-  { title: "封面", icon: "🖼️", hash: "#/cover" },
-  { title: "发布", icon: "🚀", hash: "#/publish" },
+  { title: "文案", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18 10l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>', hash: "#/extract" },
+  { title: "配音", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>', hash: "#/dubbing" },
+  { title: "数字人", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>', hash: "#/digital" },
+  { title: "剪辑", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><path d="M8 7.5 20 18M8 16.5 20 6"/></svg>', hash: "#/editing" },
+  { title: "封面", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M21 16l-5-5L5 20"/></svg>', hash: "#/cover" },
+  { title: "发布", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14"/><path d="M21 3 14 21l-4-7-7-4 18-7z"/></svg>', hash: "#/publish" },
 ];
 
 function sidebar(curIdx) {
@@ -166,14 +219,14 @@ function sidebar(curIdx) {
       <div class="sidebar-progress">已完成 ${done} / ${STEP_MAP.length}</div>
     </div>` +
     `<div class="home-item ${onHome ? "on" : ""}" id="navHome">
-      <span class="step-icon">🏠</span><span class="step-title">工作台</span>
+      <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11 12 4l8 7"/><path d="M6 10v9h12v-9"/></svg></span><span class="step-title">工作台</span>
     </div>` +
     `<div class="home-item ${onLib ? "on" : ""}" id="navLib">
-      <span class="step-icon">📚</span><span class="step-title">文案库</span>
+      <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h4v16H5z"/><path d="M10 4h4v16h-4z"/><path d="M15 5l4 1-3 14-4-1"/></svg></span><span class="step-title">文案库</span>
     </div>` +
     STEP_MAP.map((s, i) => {
       const cls = i === curIdx ? "on" : (i < curIdx ? "done" : "");
-      const dot = i < curIdx ? "✓" : (i + 1);
+      const dot = i < curIdx ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;display:block"><polyline points="20 6 9 17 4 12"/></svg>` : (i + 1);
       return `<div class="step-item ${cls}" data-idx="${i}">
         <span class="step-num">${dot}</span>
         <span class="step-icon">${s.icon}</span>
@@ -229,10 +282,11 @@ async function render() {
   if (!document.getElementById("layout")) {
     app.innerHTML = topbar() +
       `<div id="layout"><aside id="sidebar"></aside><main id="main">
-        <button class="sidebar-toggle" id="sidebarToggle" title="收起/展开导航">☰</button>
+        <button class="sidebar-toggle" id="sidebarToggle" title="收起/展开导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;display:block"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
       </main></div>`;
     bindLogout();
     bindSidebarToggle();
+    bindThemeToggle();
   }
 
   const sidebarEl = document.getElementById("sidebar");
@@ -306,9 +360,9 @@ function pageDashboard(app) {
   app.innerHTML = `<div class="wrap">
     <div class="card"><h2>工作台</h2><div class="sub">选择一种方式开始制作你的数字人短视频</div>
       <div class="entry-grid">
-        <div class="entry" id="eIndustry"><div><div class="ico">🔥</div><h3>行业爆款改写</h3><p>输入你的行业，自动筛选该行业高热度口播文案，挑一篇一键改写。</p></div></div>
-        <div class="entry" id="eLink"><div><div class="ico">🔗</div><h3>链接提取改写</h3><p>粘贴一条爆款视频链接，自动提取文案，直接进入改写流程。</p></div></div>
-        <div class="entry" id="eLib"><div><div class="ico">📚</div><h3>我的文案库</h3><p>查看所有提取/保存的文案（含智能分类与真实视频数据），点开可复用改写。</p></div></div>
+        <div class="entry" id="eIndustry"><div><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 4 4 7-7"/><path d="M20 8h-4M20 8v4"/></svg></div><h3>行业爆款改写</h3><p>输入你的行业，自动筛选该行业高热度口播文案，挑一篇一键改写。</p></div></div>
+        <div class="entry" id="eLink"><div><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6"/><path d="M10 8H7a4 4 0 0 0 0 8h3M14 8h3a4 4 0 0 1 0 8h-3"/></svg></div><h3>链接提取改写</h3><p>粘贴一条爆款视频链接，自动提取文案，直接进入改写流程。</p></div></div>
+        <div class="entry" id="eLib"><div><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h4v16H5z"/><path d="M10 4h4v16h-4z"/><path d="M15 5l4 1-3 14-4-1"/></svg></div><h3>我的文案库</h3><p>查看所有提取/保存的文案（含智能分类与真实视频数据），点开可复用改写。</p></div></div>
       </div>
     </div>
   </div>`;
@@ -341,11 +395,11 @@ async function pageIndustry(app) {
       const metaLine = (it) => {
         const parts = [];
         if (it.isMine) parts.push(`<span class="tag mine">我的真实文案</span>`);
-        else if (it.isPublic) parts.push(`<span class="tag pub">📣 公共爆款</span>`);
-        if (it.like_count != null) parts.push(`👍 ${it.like_count}`);
-        if (it.comment_count != null) parts.push(`💬 ${it.comment_count}`);
-        if (it.share_count != null) parts.push(`⤴️ ${it.share_count}`);
-        if (it.collect_count != null) parts.push(`⭐ ${it.collect_count}`);
+        else if (it.isPublic) parts.push(`<span class="tag pub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 1 1-2.5-5.4"/></svg>公共爆款</span>`);
+        if (it.like_count != null) parts.push(`<span class="stat stat-like"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>${it.like_count}</span>`);
+        if (it.comment_count != null) parts.push(`<span class="stat stat-comment"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5a8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>${it.comment_count}</span>`);
+        if (it.share_count != null) parts.push(`<span class="stat stat-share"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>${it.share_count}</span>`);
+        if (it.collect_count != null) parts.push(`<span class="stat stat-collect"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>${it.collect_count}</span>`);
         return parts.length ? `<div class="item-meta">${parts.join(" ")}</div>` : "";
       };
       const hint = r.matched
@@ -359,7 +413,7 @@ async function pageIndustry(app) {
         if (it.isMine && it.sid) { STATE.script_id = it.sid; go("#/rewrite?sid=" + it.sid); return; }
         const sv = await API.postForm("/scripts/save", { source: "industry", industry: r.industry || v, original_text: it.content });
         STATE.script_id = sv.script_id;
-        if (sv.duplicated) toast("文案已存在，已更新该条 ✓");
+        if (sv.duplicated) toast("文案已存在，已更新该条");
         go("#/rewrite?sid=" + sv.script_id);
       });
     } catch (e) { toast(e.message); }
@@ -369,7 +423,7 @@ async function pageIndustry(app) {
 // ===== 文案库列表 =====
 async function pageLibrary(app) {
   app.innerHTML = `<div class="wrap">
-    <div class="card"><h2>📚 我的文案库</h2><div class="sub">所有提取/保存的文案（含智能分类与真实视频数据），点开可复用改写</div>
+    <div class="card"><h2 class="page-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>我的文案库</h2><div class="sub">所有提取/保存的文案（含智能分类与真实视频数据），点开可复用改写</div>
       <div id="libList" style="margin-top:12px"></div>
     </div>
   </div>`;
@@ -382,10 +436,11 @@ async function pageLibrary(app) {
       return;
     }
     box.innerHTML = list.map((s, i) => {
-      const lc = s.like_count != null ? `👍${s.like_count} ` : "";
-      const cc = s.comment_count != null ? `💬${s.comment_count} ` : "";
-      const sc = s.share_count != null ? `⤴️${s.share_count} ` : "";
-      const kc = s.collect_count != null ? `⭐${s.collect_count} ` : "";
+      const ico = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+      const lc = s.like_count != null ? `<span class="stat stat-like">${ico('<path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>')}${s.like_count}</span>` : "";
+      const cc = s.comment_count != null ? `<span class="stat stat-comment">${ico('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5a8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>')}${s.comment_count}</span>` : "";
+      const sc = s.share_count != null ? `<span class="stat stat-share">${ico('<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>')}${s.share_count}</span>` : "";
+      const kc = s.collect_count != null ? `<span class="stat stat-collect">${ico('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>')}${s.collect_count}</span>` : "";
       const meta = (lc + cc + sc + kc) ? `<div class="item-meta">${lc}${cc}${sc}${kc}</div>` : "";
       const src = s.source === "link" ? "提取" : (s.source === "industry" ? "行业" : (s.source || "其他"));
       const title = s.video_title || s.title || (s.original_text || "").slice(0, 24) || "未命名文案";
@@ -440,16 +495,17 @@ async function pageExtract(app) {
     const mm = dur ? `${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, "0")}` : "—";
     const box = document.getElementById("metaBox");
     box.style.display = "block";
-    box.innerHTML = `<div class="meta-title">📊 视频数据</div>
+    const ico2 = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:block">${d}</svg>`;
+    box.innerHTML = `<div class="meta-title">${ico2('<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>')}视频数据</div>
       <div class="meta-grid">
-        <span>👍 点赞 ${fmt(m.like_count)}</span>
-        <span>💬 评论 ${fmt(m.comment_count)}</span>
-        <span>⤴️ 转发 ${fmt(m.share_count)}</span>
-        <span>⭐ 收藏 ${fmt(m.collect_count)}</span>
-        <span>⏱ 时长 ${mm}</span>
+        <span class="stat stat-like"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>点赞 ${fmt(m.like_count)}</span>
+        <span class="stat stat-comment"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5a8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>评论 ${fmt(m.comment_count)}</span>
+        <span class="stat stat-share"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>转发 ${fmt(m.share_count)}</span>
+        <span class="stat stat-collect"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>收藏 ${fmt(m.collect_count)}</span>
+        <span class="stat stat-time"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>时长 ${mm}</span>
       </div>
-      ${m.title ? `<div class="meta-line">🎬 ${esc(m.title)}</div>` : ""}
-      ${m.uploader ? `<div class="meta-line">👤 作者：${esc(m.uploader)}</div>` : ""}`;
+      ${m.title ? `<div class="meta-line">${ico2('<rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/>')} ${esc(m.title)}</div>` : ""}
+      ${m.uploader ? `<div class="meta-line">${ico2('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>')} 作者：${esc(m.uploader)}</div>` : ""}`;
     if (r.industry) document.getElementById("indSel").value = IND_OPTS.includes(r.industry) ? r.industry : "其他";
     if (r.type) document.getElementById("typeSel").value = TYP_OPTS.includes(r.type) ? r.type : "解题型";
     curMeta = m; curSourceUrl = r.source_url || "";
@@ -494,7 +550,7 @@ async function pageExtract(app) {
     const sv = await API.postForm("/scripts/save", payload);
     STATE.script_id = sv.script_id;
     if (goRewrite) go("#/rewrite?sid=" + sv.script_id);
-    else toast(sv.duplicated ? "文案已存在，已更新该条 ✓" : "已存入文案库 ✓");
+    else toast(sv.duplicated ? "文案已存在，已更新该条" : "已存入文案库");
   };
   document.getElementById("btnSaveLib").onclick = () => doSave(false);
   document.getElementById("btnNext").onclick = () => doSave(true);
@@ -529,7 +585,7 @@ async function pageRewrite(app) {
         <button class="btn ghost" id="btnBack">返回</button>
       </div>
     </div>
-    ${hasGen ? `<div class="card"><h2 style="font-size:16px">✅ 改写稿<span class="muted" style="font-size:12px;font-weight:400;margin-left:8px">可继续编辑，配音默认用这份${script.updated_at ? " · 上次更新 " + String(script.updated_at).slice(5, 16) : ""}</span></h2>
+    ${hasGen ? `<div class="card"><h2 style="font-size:16px;display:flex;align-items:center;gap:8px"><svg viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>改写稿<span class="muted" style="font-size:12px;font-weight:400;margin-left:8px">可继续编辑，配音默认用这份${script.updated_at ? " · 上次更新 " + String(script.updated_at).slice(5, 16) : ""}</span></h2>
       <div class="preview-box" style="max-height:320px">${esc(script.generated_text)}</div>
       <div class="word-count">字数：${wordCount(script.generated_text)}</div>
       <div class="row" style="margin-top:12px">
@@ -597,7 +653,7 @@ function showPreview(text, sid, meta) {
   const initial = text || "";
   const body = `<div class="preview-box" id="prevBox" contenteditable="true" spellcheck="false">${esc(initial)}</div>
     <div class="preview-meta-row">
-      <div class="muted" style="font-size:12px">💡 可直接在上方框内修改文案</div>
+      <div class="muted" style="font-size:12px;display:flex;align-items:center;gap:5px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;color:var(--faint)"><path d="M9.663 17h4.673M12 3v1M6.343 6.343l-.707-.707M18.364 18.364l-.707-.707M4.93 12H4M20 12h-.93M6.343 17.657l-.707.707M18.364 5.636l-.707.707"/><circle cx="12" cy="12" r="4"/></svg>可直接在上方框内修改文案</div>
       <div class="word-count" id="prevWordCount">字数：${wordCount(initial)}</div>
     </div>
     <div id="checkSummary"></div>`;
@@ -623,9 +679,9 @@ function showPreview(text, sid, meta) {
       box.innerHTML = highlightHits(cur, r.hits);
       if (r.safe) {
         summary.innerHTML = "";
-        toast("✅ 未检出违禁词");
+        toast("未检出违禁词", "ok");
       } else {
-        summary.innerHTML = `<div class="check-summary">⚠️ 命中：${r.hits.map(h => `「${esc(h.word)}」${esc(h.category)}`).join("、")}</div>`;
+        summary.innerHTML = `<div class="check-summary" style="display:flex;align-items:center;gap:7px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>命中：${r.hits.map(h => `「${esc(h.word)}」${esc(h.category)}`).join("、")}</div>`;
         toast(`检出 ${r.count} 个风险词，已高亮并定位`);
         scrollToFirstHit(box);
       }
@@ -660,10 +716,10 @@ async function pageDubbing(app) {
   app.innerHTML = `<div class="wrap">
     <div class="card"><h2>配音</h2><div class="sub">上传你的音色，调节情绪 / 语速 / 音调 / 音量，生成专属配音</div>
       ${sid ? (usingGen ? `<div class="check-summary" style="background:var(--panel2);border-color:var(--line);color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:12px">
-        <span>本次配音文案：✅ 改写稿 · ${wordCount(dubText)} 字</span>
+        <span style="display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg>本次配音文案：改写稿 · ${wordCount(dubText)} 字</span>
         <button class="btn ghost sm" id="btnViewDubText">查看</button>
       </div>` : `<div class="check-summary" style="background:rgba(255,204,77,.1);border-color:rgba(255,204,77,.4);color:var(--warn);display:flex;justify-content:space-between;align-items:center;gap:12px">
-        <span>⚠️ 该文案尚未改写，不能直接配音</span>
+        <span style="display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>该文案尚未改写，不能直接配音</span>
         <button class="btn ghost sm" id="btnGoRewrite">去改写 →</button>
       </div>`) : `<div class="check-summary" style="margin-bottom:8px">未指定文案，请先从改写页点「满意 前往配音」或从文案库选择</div>`}
       <label style="margin-top:${sid ? "14" : "0"}px">我的音色（点击选用，无需重复上传）</label>
@@ -676,7 +732,7 @@ async function pageDubbing(app) {
       <div id="upArea" style="display:none;margin-top:10px">
         <div class="file-drop" id="timbreDrop" style="padding:28px 16px;width:100%;box-sizing:border-box">
           <input type="file" id="timbreFile" accept=".wav,.mp3,.m4a" hidden />
-          <span id="timbreFileName" style="font-size:14px">🎙 点击选择音频文件，或拖拽到此处（WAV / MP3 / M4A）</span>
+          <span id="timbreFileName" style="font-size:14px;display:flex;align-items:center;justify-content:center;gap:7px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>点击选择音频文件，或拖拽到此处（WAV / MP3 / M4A）</span>
           <button class="btn" style="margin-top:14px" id="btnUpTimbre">确认上传</button>
         </div>
       </div>
@@ -698,10 +754,10 @@ async function pageDubbing(app) {
         <label>音量调节：<span id="volVal">50</span></label>
         <div class="range-row"><input type="range" id="vol" min="0" max="100" step="1" value="50" /><span class="muted">小 ←→ 大</span></div>
 
-        <label style="margin-top:14px">随机种子（同一 seed 可复现；换一个就是换一版效果，不满意点🎲再抽一次）</label>
+        <label style="margin-top:14px">随机种子（同一 seed 可复现；换一个就是换一版效果，不满意点「随机」再抽一次）</label>
         <div class="row" style="margin-top:6px;align-items:center;gap:8px">
           <input id="seedInput" type="number" min="0" max="65535" step="1" value="0" style="width:120px" />
-          <button class="btn ghost sm" id="btnRollSeed">🎲 随机</button>
+          <button class="btn ghost sm" id="btnRollSeed">随机</button>
           <button class="btn ghost sm" id="btnResetSeed">归零</button>
         </div>
       </div>
@@ -763,7 +819,7 @@ async function pageDubbing(app) {
   drop.onclick = (e) => { if (e.target.closest("button")) return; timbreFile.click(); };
   timbreFile.onchange = () => {
     const f = timbreFile.files[0];
-    fName.textContent = f ? `🎙 ${f.name}` : "🎙 点击选择音频文件，或拖拽到此处（WAV / MP3 / M4A）";
+    fName.textContent = f ? f.name : "点击选择音频文件，或拖拽到此处（WAV / MP3 / M4A）";
     fName.classList.toggle("muted", !f);
   };
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("drag"); };
@@ -807,9 +863,9 @@ async function pageDubbing(app) {
         // 清空已选文件，避免下次打开页面还留着一个 stale 文件名
         timbreFile.value = "";
         const fn = document.getElementById("timbreFileName");
-        if (fn) fn.textContent = "🎙 点击选择音频文件，或拖拽到此处（WAV / MP3 / M4A）";
+        if (fn) fn.textContent = "点击选择音频文件，或拖拽到此处（WAV / MP3 / M4A）";
         closeModal();
-        toast("音色已上传 ✓");
+        toast("音色已上传");
         loadTimbres();
       } catch (e) { toast(e.message); }
     };
@@ -886,7 +942,7 @@ async function pageDubbing(app) {
       const box = document.getElementById("timbreList");
       if (!list.length) {
         box.innerHTML = `<div class="check-summary" style="background:rgba(255,204,77,.1);border-color:rgba(255,204,77,.4);color:var(--warn);display:flex;align-items:center;gap:8px">
-          <span>⚠️ 暂无音色，请先上传</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>暂无音色，请先上传</span>
         </div>`;
         // 空态：自动展开上传区（pageDubbing 渲染时可拿到 upArea/btnToggleUp）
         const u = document.getElementById("upArea");
@@ -914,9 +970,9 @@ async function pageDubbing(app) {
         try {
           const r = await API.req("/timbres/" + id, { method: "DELETE" });
           if (+_dubState.timbre_id === id) _dubState.timbre_id = 0;
-          if (r && r.cloud_deleted) toast("已删除 ✓ 云端音色已同步清理");
+          if (r && r.cloud_deleted) toast("已删除，云端音色已同步清理");
           else if (r && r.cloud_msg) toast(`本地已删除；云端清理失败：${r.cloud_msg}`);
-          else toast("已删除 ✓");
+          else toast("已删除");
           loadTimbres();
         } catch (e2) { toast(e2.message); }
       });
@@ -925,15 +981,85 @@ async function pageDubbing(app) {
   function renderDubResult(r) {
     document.getElementById("dubResult").innerHTML = `
       <div class="card" style="margin:0"><h2 style="font-size:16px">配音完成</h2>
-        <audio class="media" controls src="${r.url}"></audio>
+        <div class="player">
+          <button class="player-btn" id="plPlay" aria-label="播放">▶</button>
+          <span class="player-time" id="plCur">0:00</span>
+          <div class="player-bar" id="plBar"><div class="player-bar-fill" id="plFill"></div></div>
+          <span class="player-time" id="plDur">0:00</span>
+          <div class="player-vol-wrap">
+            <button class="player-vol" id="plVol" aria-label="音量">🔊</button>
+            <input type="range" class="player-vol-slider" id="plVolSlider" min="0" max="100" value="80">
+          </div>
+        </div>
+        <audio id="plAudio" src="${r.url}"></audio>
         <div class="row">
           <button class="btn ghost sm" id="btnRedub">重新配音</button>
           <a class="btn ghost sm" href="${r.url}" download>下载配音</a>
           <button class="btn sm" id="btnToDH">满意 前往数字人</button>
         </div>
       </div>`;
+
+    const audio = document.getElementById("plAudio");
+    const btn = document.getElementById("plPlay");
+    const bar = document.getElementById("plBar");
+    const fill = document.getElementById("plFill");
+    const cur = document.getElementById("plCur");
+    const dur = document.getElementById("plDur");
+    const vol = document.getElementById("plVol");
+    const volSlider = document.getElementById("plVolSlider");
+
+    const fmt = (s) => {
+      if (!isFinite(s)) return "0:00";
+      s = Math.floor(s);
+      const m = Math.floor(s / 60);
+      const sec = String(s % 60).padStart(2, "0");
+      return m + ":" + sec;
+    };
+
+    audio.volume = 0.8;
+    audio.addEventListener("loadedmetadata", () => { dur.textContent = fmt(audio.duration); });
+    audio.addEventListener("timeupdate", () => {
+      cur.textContent = fmt(audio.currentTime);
+      if (audio.duration) fill.style.width = (audio.currentTime / audio.duration * 100) + "%";
+    });
+    audio.addEventListener("ended", () => { btn.textContent = "▶"; });
+
+    btn.onclick = () => {
+      if (audio.paused) { audio.play(); btn.textContent = "⏸"; }
+      else { audio.pause(); btn.textContent = "▶"; }
+    };
+
+    const seek = (e) => {
+      const rect = bar.getBoundingClientRect();
+      const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
+      if (audio.duration) audio.currentTime = x / rect.width * audio.duration;
+    };
+    bar.addEventListener("pointerdown", (e) => {
+      seek(e);
+      const move = (ev) => seek(ev);
+      const up = () => {
+        bar.removeEventListener("pointermove", move);
+        bar.removeEventListener("pointerup", up);
+      };
+      bar.addEventListener("pointermove", move);
+      bar.addEventListener("pointerup", up);
+    });
+
+    volSlider.addEventListener("input", () => {
+      audio.volume = volSlider.value / 100;
+      audio.muted = false;
+      vol.textContent = audio.volume === 0 ? "🔇" : "🔊";
+    });
+    vol.onclick = () => {
+      if (audio.muted || audio.volume === 0) {
+        audio.muted = false; audio.volume = 0.8; volSlider.value = 80; vol.textContent = "🔊";
+      } else {
+        audio.muted = true; vol.textContent = "🔇";
+      }
+    };
+
     document.getElementById("btnRedub").onclick = document.getElementById("btnGenDub").onclick;
-    document.getElementById("btnToDH").onclick = () => go(`#/digital?sid=${sid}&audio=${r.audio_id}`);
+    document.getElementById("btnToDH").onclick = () => go("#/digital?sid=" + sid + "&audio=" + r.audio_id);
   }
 }
 
@@ -951,7 +1077,7 @@ async function pageDigital(app) {
 
       <div class="dropzone" id="avatarDrop">
         <input type="file" id="avatarFile" accept="video/*" hidden />
-        <div class="dz-ico">🎬</div>
+        <div class="dz-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h6l-1-4M9 10 8 6"/><circle cx="15" cy="12" r="1.4"/></svg></div>
         <div class="dz-main" id="dzMain">点击选择驱动视频，或拖拽到此处</div>
         <div class="dz-sub">支持 MP4 / MOV / WEBM，正脸效果最佳</div>
         <div class="dz-file" id="dzFile" hidden>
@@ -963,7 +1089,7 @@ async function pageDigital(app) {
       <div id="avatarList" class="avatar-grid"></div>
 
       <button class="btn cta" id="btnGenDH" disabled>
-        <span class="cta-ico">✨</span> 生成口播视频
+        <svg class="cta-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>生成口播视频
       </button>
     </div>
 
@@ -1030,7 +1156,7 @@ async function pageDigital(app) {
         dropEl.classList.remove("has-file", "busy");
         btnUp.textContent = old;
         closeModal();
-        toast("形象已上传 ✓");
+        toast("形象已上传");
         loadAvatars().then(() => {
           // 上传后默认选中新形象 → 同步右上角徽标文案，避免与"已就绪 N 个"混淆
           const dhStat = document.getElementById("dhStat");
@@ -1066,7 +1192,7 @@ async function pageDigital(app) {
       const list = await API.get("/avatars");
       const dhStat = document.getElementById("dhStat");
       if (!list.length) {
-        box.innerHTML = `<div class="empty-tip">⚠️ 暂无形象，请先上传驱动视频</div>`;
+        box.innerHTML = `<div class="empty-tip" style="display:flex;align-items:center;justify-content:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>暂无形象，请先上传驱动视频</div>`;
         dhStat.textContent = "待上传形象"; dhStat.className = "dh-stat warn";
         document.getElementById("btnGenDH").disabled = true;
         return;
@@ -1119,7 +1245,7 @@ async function pageDigital(app) {
   function dhMediaHTML(r, cls = "media") {
     if (r.video_url) return `<video class="${cls} auto-pip" controls preload="metadata" src="${r.video_url}"></video>`;
     if (r.poster_url) return `<img class="${cls}" src="${r.poster_url}" /><div class="muted">（本环境无 ffmpeg，以静态形象+配音预览；上云可生成真实视频）</div>`;
-    return `<div class="muted" style="padding:12px 0;text-align:center">⚠️ 未产出可播放视频</div>`;
+    return `<div class="muted" style="padding:12px 0;text-align:center;display:flex;align-items:center;justify-content:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>未产出可播放视频</div>`;
   }
 
   function renderDH(r) {
@@ -1129,7 +1255,7 @@ async function pageDigital(app) {
         <div class="row" style="margin-top:10px">
           <span class="dh-tag current">本次生成</span>
           <button class="btn sm" id="btnToEdit">满意 去剪辑</button>
-          <button class="btn ghost sm" id="btnDHHistory" style="margin-left:auto">📜 查看历史记录</button>
+          <button class="btn ghost sm" id="btnDHHistory" style="margin-left:auto">查看历史记录</button>
         </div>
       </div>`;
     document.getElementById("btnToEdit").onclick = () => go(`#/editing?vid=${r.video_id}`);
@@ -1156,7 +1282,7 @@ async function pageDigital(app) {
     if (!confirm("确定删除该视频？将同时删除它名下的所有剪辑成品，删除后不可恢复。")) return;
     try {
       await API.req("/videos/" + id, { method: "DELETE" });
-      toast("已删除 ✓");
+      toast("已删除");
       await loadExistingDH();   // 必须等 /videos 拉完、_dhState.history 更新后再重渲，否则弹窗用旧数据渲染，删除项"假不消失"
       // 若历史弹窗开着，用刷新后的 _dhState.history 重渲，使列表即时更新
       const modalEl = document.getElementById("modal");
@@ -1195,7 +1321,7 @@ async function pageDigital(app) {
             <div class="row" style="margin-top:10px">
               <span class="dh-tag last">上次生成 · ${String(current.created_at || "").slice(0, 16)}</span>
               <button class="btn sm" id="btnToEditLast">去剪辑</button>
-              <button class="btn ghost sm" id="btnDHHistory" style="margin-left:auto">📜 查看历史记录</button>
+              <button class="btn ghost sm" id="btnDHHistory" style="margin-left:auto">查看历史记录</button>
             </div>
           </div>`;
         document.getElementById("btnToEditLast").onclick = () => go(`#/editing?vid=${current.video_id}`);
@@ -1229,10 +1355,10 @@ async function pageEditing(app) {
   // - "网感大字"不勾选 = 普通字幕（底部小字），勾选 = 爆款标题大字
   const opts = { color: true, bigtext: false, mg: false, bgm: false };
   const fxOpts = [
-    { k: "color", label: "自动调色", desc: "智能色彩增强", icon: "🎨" },
-    { k: "bigtext", label: "网感大字", desc: "爆款标题字幕", icon: "🔥" },
-    { k: "mg", label: "MG动画", desc: "图形动态包装", icon: "✨" },
-    { k: "bgm", label: "背景音乐", desc: "AI 配乐匹配", icon: "🎵" }
+    { k: "color", label: "自动调色", desc: "智能色彩增强", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a7 7 0 0 0-7 7c0 3 2 4 3 4h2a2 2 0 0 0 2-2V9a2 2 0 0 1 2-2 2 2 0 0 1 2 2 2 2 0 0 0 4 0 7 7 0 0 0-8-7z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="8" r="1"/></svg>' },
+    { k: "bigtext", label: "网感大字", desc: "爆款标题字幕", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16M18 4v16M6 12h12"/></svg>' },
+    { k: "mg", label: "MG动画", desc: "图形动态包装", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6z"/></svg>' },
+    { k: "bgm", label: "背景音乐", desc: "AI 配乐匹配", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="17" r="2.4"/><circle cx="17" cy="15" r="2.4"/><path d="M9.4 17V6l9.6-2v11"/></svg>' }
   ];
   app.innerHTML = `<div class="wrap">
     <div class="card"><h2>自动剪辑</h2><div class="sub">一键应用以下智能剪辑效果</div>
@@ -1420,7 +1546,7 @@ async function pagePublish(app) {
     try {
       const r = await API.postForm("/publish", { cover_id: cid, platform: sel });
       document.getElementById("pubResult").innerHTML = `
-        <div class="card" style="margin:0"><h2 style="font-size:16px;color:var(--ok)">✅ 已发布到 ${esc(sel)}</h2>
+        <div class="card" style="margin:0"><h2 style="font-size:16px;color:var(--ok);display:flex;align-items:center;gap:7px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:17px;height:17px"><polyline points="20 6 9 17 4 12"/></svg>已发布到 ${esc(sel)}</h2>
           <div class="kv"><span>平台</span><span>${esc(r.platform)}</span></div>
           <div class="kv"><span>状态</span><span>${esc(r.status)}</span></div>
           <div class="muted" style="margin-top:10px">${esc(r.note || "")}</div>
