@@ -221,4 +221,5 @@ digital_human_platform/
 本仓库为**私有交付版**，授权给付费客户使用。
 禁止未授权的二次分发与商业转售。
 
-扫码联系<img width="444" height="565" alt="26c23faa1f63b8ae656e13ed3f285e0f" src="https://github.com/user-attachments/assets/89b9469a-f9a4-4033-b045-c6fe3c417f47" />
+扫码进群
+<img width="444" height="565" alt="26c23faa1f63b8ae656e13ed3f285e0f" src="https://github.com/user-attachments/assets/89b9469a-f9a4-4033-b045-c6fe3c417f47" />
