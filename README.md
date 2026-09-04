@@ -38,7 +38,7 @@
   style="max-width:720px; border-radius:8px;">
 </video>
 
-**查看完整版**：[digital_human_anuo.mp4](https://img.triview.cn/ai/video/digital_human_anuo.mp4)（直链下载 / 新窗口播放）
+**查看完整版**：（视频过于清晰，如出现卡顿，建议下载播放）(https://img.triview.cn/ai/video/digital_human_anuo.mp4)
 
 ---
 
