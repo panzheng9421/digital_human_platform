@@ -235,7 +235,6 @@ digital_human_platform/
 ## License
 
 本仓库为**私有交付版**，授权给付费客户使用。
-禁止未授权的二次分发与商业转售。
+如需商用请联系我。欢迎加群二次开发。
 
-扫码进群
 <img width="444" height="565" alt="26c23faa1f63b8ae656e13ed3f285e0f" src="https://github.com/user-attachments/assets/89b9469a-f9a4-4033-b045-c6fe3c417f47" />
