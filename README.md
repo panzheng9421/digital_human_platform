@@ -27,7 +27,8 @@
 ---
 ## 下面是作品展示
 
-https://img.triview.cn/ai/video/digital_human_anuo.mp4
+<video class="" controls="" preload="metadata" src="https://img.triview.cn/ai/video/digital_human_anuo.mp4" data-aspect="16:9"></video>
+
 
 ---
 
