@@ -1402,7 +1402,6 @@ async function pagePublish(app) {
   try { const c = await API.get("/covers/" + cid); coverUrl = c.url || ""; coverTitle = c.title || ""; } catch (e) {}
   app.innerHTML = `<div class="wrap">
     <div class="card"><h2>发布</h2><div class="sub">选择发布平台，一键发布</div>
-      <label>发布平台</label>
       <div class="chips" id="pfChips">${platforms.map(p => `<div class="chip ${p === sel ? "on" : ""}" data-p="${p}">${p}</div>`).join("")}</div>
       <div id="coverPrev" style="margin-top:12px">${coverUrl
         ? `<img class="media" style="max-width:240px" src="${coverUrl}" /><div class="muted" style="margin-top:6px">${esc(coverTitle)}</div>`
