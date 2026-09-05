@@ -672,27 +672,9 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
                     (user["id"], script_id, timbre_id, emotion, speed, pitch, volume, seed,
                      _rel(out), duration, "done", _now()))
         aid = cur.lastrowid
-        # 按文案去重：同一 script_id 只保留本次最新配音，删除之前的旧配音（文件 + DB 行）。
-        # 旧配音的 wav 不被任何数字人视频依赖（数字人视频是自包含 mp4，只走剪辑不重新配音），可放心删。
-        try:
-            old_rows = conn.execute(
-                "SELECT id, file_path FROM audios WHERE script_id=? AND user_id=? AND id != ?",
-                (script_id, user["id"], aid)
-            ).fetchall()
-            for o in old_rows:
-                fp = os.path.join(STORAGE_DIR, (o["file_path"] or "").replace("/", os.sep))
-                if fp and os.path.exists(fp):
-                    try:
-                        os.remove(fp)
-                        print(f"[dubbing] 清理冗余旧配音: {fp}")
-                    except Exception as e:
-                        print(f"[dubbing] 清理冗余旧配音失败(可忽略): {fp} -> {e}")
-            if old_rows:
-                conn.execute("DELETE FROM audios WHERE script_id=? AND user_id=? AND id != ?",
-                             (script_id, user["id"], aid))
-                print(f"[dubbing] 已清理 {len(old_rows)} 条冗余旧配音记录(script={script_id})")
-        except Exception as e:
-            print(f"[dubbing] 旧配音去重异常(不影响本次结果): {e}")
+        # 同一文案允许多条配音并存（不再自动去重 / 清旧文件）：
+        #   用户每次「重新配音」时旧的 file + DB 行都保留，配音页「历史配音」列表可全部试听 / 下载 / 删除 / 挑某条进数字人。
+        #   历史配音的 wav 不会被任何数字人视频依赖（数字人视频是自包含 mp4，只走剪辑不重新配音），保留供回听无副作用。
         conn.commit(); conn.close()
         r = {"audio_id": aid, "url": "/files/" + _rel(out), "duration": duration,
              "emotion": emotion, "speed": speed, "pitch": pitch,
@@ -702,6 +684,28 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
         set_result(tid, r)
     threading.Thread(target=_run, args=(tid, work)).start()
     return {"task_id": tid}
+
+
+@api.delete("/audios/{aid}")
+def delete_audio(aid: int, user=Depends(get_user)):
+    """用户主动删除某条配音历史：删 DB 行 + 落盘文件。
+    不影响数字人视频（已生成的口播视频是自包含 mp4，不再依赖配音 wav）。"""
+    conn = db.get_conn()
+    row = conn.execute("SELECT id, file_path FROM audios WHERE id=? AND user_id=?",
+                       (aid, user["id"])).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "配音不存在")
+    fp = os.path.join(STORAGE_DIR, (row["file_path"] or "").replace("/", os.sep))
+    if fp and os.path.exists(fp):
+        try:
+            os.remove(fp)
+            print(f"[dubbing] 用户手动删除配音文件: {fp}")
+        except Exception as e:
+            print(f"[dubbing] 用户删除配音文件失败(可忽略): {fp} -> {e}")
+    conn.execute("DELETE FROM audios WHERE id=? AND user_id=?", (aid, user["id"]))
+    conn.commit(); conn.close()
+    return {"ok": True}
 
 
 # ============ 数字人 ============

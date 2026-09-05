@@ -1,127 +1,131 @@
-"""文案智能分类（规则关键词打分，零依赖、即时）。
+"""文案智能分类（LLM 语义分类，基于项目已有的 DeepSeek 配置）。
 
-目标：把提取到的口播文案自动归类到「行业」与「写法类型」，
-让存入文案库后，能在「行业爆款」搜索时按行业命中真实数据。
+规则关键词打分方案已废弃删除——它只能做字面词命中，读不出语义，
+对「AI 个人网站」「我脑子活自己搭网站」这类不出现行业词但语义明确的
+内容完全失效，且泛词必产生误判垃圾。
 
-行业体系与 app/data/viral_scripts.VIRAL_SCRIPTS 的键保持一致，
-分类结果直接可用于 /scripts/industry 的合并查询。
+改用 LLM 主分类：把文案 + 行业/类型白名单发给 DeepSeek，要求只输出
+固定 JSON，由模型做语义理解归类。模型不可用（无 key / 超时 / 异常）
+时安全降级为「其他 / 解题型」，不再回退任何关键词规则。
+
+行业体系与 app/data/viral_scripts.VIRAL_SCRIPTS 的键保持一致。
 """
-import re
+import hashlib
+import json
 
-# 行业 -> 关键词（命中越多越可能是该行业；用更具体的词降低误判）
-# 格式：字符串默认权重 1；("词", 权重) 可给强信号更高分。
-# 原则：强行业信号（饺子/房产/培训/美妆等）权重高；泛词（开店/顾客/回头客/性价比）权重低。
-INDUSTRY_KEYWORDS = {
-    "本地生活": ["县城", "本地", "同城", ("小店", 1.5), "实体店", "门店", "街", "巷子", "丰宁", "承德",
-              ("开店", 0.5), "生意", ("顾客", 0.5), ("回头客", 0.5), ("性价比", 0.5),
-              "探店", "宝藏店铺", "老板娘", "摆摊", ("请客", 2), ("聚会", 2), ("聚餐", 2)],
-    "餐饮美食": [("餐饮", 3), ("饭店", 2), ("餐厅", 2), ("餐馆", 2), ("小吃", 2), ("美食", 2),
-              "好吃", "吃什么", ("面馆", 3), ("火锅", 3), ("烧烤", 2), "菜品", "菜", "味道",
-              "汤底", "做饭", "复刻", "招牌菜", "食材", "外卖", "奶茶", "咖啡", "夜市", "路边摊",
-              ("饺子", 3.5), ("水饺", 3.5), ("包子", 3), ("馒头", 3), ("面食", 3),
-              ("擀皮", 2), ("调馅", 2), ("现包", 1.5), ("现做", 1.5)],
-    "房产中介": [("买房", 3), ("卖房", 3), ("房产", 3), ("中介", 2), ("楼市", 2), ("房价", 3),
-              ("二手房", 3), ("新房", 2), "公摊", "物业", "户型", ("开发商", 2), ("房贷", 2),
-              ("首付", 2), "看房", ("租房", 2), "学区", "过户", "契税"],
-    "教育培训": [("孩子", 2), ("教育", 3), ("培训", 3), ("学习", 2), ("补课", 2), ("家长", 1.5),
-              ("学生", 2), ("老师", 2), ("考试", 2), ("学校", 2), ("作业", 2), ("辅导", 2),
-              ("课程", 2), "提分", "托管", "早教", "升学", "学霸"],
-    "美妆护肤": [("美妆", 3), ("护肤", 3), ("化妆", 2), ("皮肤", 2), "烂脸", "面膜", "口红",
-              "粉底", "显白", "素颜", "抗老", "补水", "成分", ("敏感肌", 2), "妆容", "精华", "防晒"],
-    "服装穿搭": [("穿搭", 3), ("服装", 2), ("衣服", 2), ("时尚", 2), "显瘦", "微胖", "衣柜",
-              "搭配", "单品", "身材", "风格", "换季", "淘宝", "卫衣", "裙子"],
-    "健身减肥": [("健身", 3), ("减肥", 3), ("运动", 2), ("塑形", 2), "跑步", "体重", "平台期",
-              "力量训练", "肌肉", "减脂", "瑜伽", "健身卡", "身材管理", "碳水", "撸铁"],
-    "数码家电": [("数码", 3), ("家电", 2), ("电脑", 2), ("手机", 2), "笔记本", "显卡", "内存",
-              "硬盘", "相机", "电视", "空调", "洗衣机", "参数", "测评",
-              "电子产品", "路由器", "平板",
-              # AI/科技新闻强信号（吸收 GPT/AGI/OpenAI/大模型 类口播稿）
-              ("AI", 3), ("人工智能", 3), ("大模型", 3), ("GPT", 3), ("OpenAI", 3),
-              ("AGI", 3), ("agi", 3), ("模型", 2), ("智能", 2)],
-    "二手车": [("二手车", 5), ("代步车", 3), ("练手车", 3), ("练手", 2), ("神车", 2),
-              ("车况", 3), ("过户", 3), ("公里数", 3), ("原版原漆", 3), ("划痕", 2),
-              ("车商", 2), ("二手车商", 3), ("车贩子", 2), ("4S店", 2), ("4s店", 2),
-              ("车主", 2), ("车险", 2), ("保养", 1.5), ("维修", 1.5), ("修理厂", 2),
-              ("省油", 1.5), ("油耗", 1.5), ("续航", 2), ("充电桩", 2), ("保值", 1.5),
-              ("新能源", 2), ("纯电动车", 2), ("纯电车", 2), ("混动", 2), ("增程", 2),
-              ("合资车", 2), ("国产车", 2), ("SUV", 1.5), ("轿车", 1.5), ("MPV", 1.5),
-              ("试驾", 2), ("提车", 1.5), ("验车", 2), ("钣金", 1.5), ("喷漆", 1.5),
-              ("第一辆", 1.5), ("剐蹭", 1.5), ("老司机", 1)],
-}
+import requests as _requests
 
-# 行业别名（用于把分类结果归一到 VIRAL_SCRIPTS 的行业键）
-INDUSTRY_ALIASES = {
-    "餐饮": "餐饮美食", "美食": "餐饮美食", "吃": "餐饮美食", "饭店": "餐饮美食",
-    "饺子": "餐饮美食", "水饺": "餐饮美食", "面馆": "餐饮美食",
-    "房产": "房产中介", "买房": "房产中介", "中介": "房产中介", "楼市": "房产中介",
-    "教育": "教育培训", "培训": "教育培训", "孩子": "教育培训", "学习": "教育培训",
-    "美妆": "美妆护肤", "护肤": "美妆护肤", "化妆": "美妆护肤", "皮肤": "美妆护肤",
-    "穿搭": "服装穿搭", "服装": "服装穿搭", "衣服": "服装穿搭", "时尚": "服装穿搭",
-    "健身": "健身减肥", "减肥": "健身减肥", "运动": "健身减肥", "塑形": "健身减肥",
-    "数码": "数码家电", "家电": "数码家电", "电脑": "数码家电", "手机": "数码家电",
-    "AI": "数码家电", "人工智能": "数码家电", "大模型": "数码家电", "模型": "数码家电",
-    "智能": "数码家电", "AGI": "数码家电", "agi": "数码家电", "GPT": "数码家电", "OpenAI": "数码家电",
-    "本地": "本地生活", "同城": "本地生活", "县城": "本地生活", "小店": "本地生活",
-    "二手车": "二手车", "汽车": "二手车", "买车": "二手车", "卖车": "二手车",
-    "代步车": "二手车", "练手车": "二手车", "过户": "二手车", "车况": "二手车",
-}
+# 行业白名单（须与 VIRAL_SCRIPTS 的行业键保持一致；"其他"为兜底）
+INDUSTRY_LIST = ["本地生活", "餐饮美食", "房产中介", "教育培训", "美妆护肤",
+                 "服装穿搭", "健身减肥", "数码家电", "二手车", "其他"]
+# 写法类型白名单
+TYPE_LIST = ["解题型", "推荐型", "疑问型", "揭秘型", "案例型"]
 
 DEFAULT_INDUSTRY = "其他"
-
-# 写法类型关键词（按顺序优先级判断）
-# 注意：推荐型前置，避免「代步神车/必入/闭眼入」类推荐文案被反问句误判成疑问型。
-TYPE_RULES = [
-    ("推荐型", ["推荐", "闭眼入", "闭眼买", "闭眼选", "闭眼冲", "真心觉得", "真心推荐", "强烈推荐",
-              "安利", "种草", "盘点", "值得买", "值得入手", "入手不亏", "必入", "必选", "就选",
-              "代步神车", "神车", "看这三台", "看这几台", "就冲它"]),
-    ("疑问型", ["为什么", "凭什么", "你有没有想过", "到底", "怎么就", "难道", "吗？", "对吗", "对不对"]),
-    ("揭秘型", ["揭秘", "真相", "行业内幕", "不愿让人知道", "掀开", "避坑", "内幕", "没人告诉你"]),
-    ("案例型", ["我认识", "我身边", "真实例子", "我朋友", "亲测", "复盘", "我干了", "我干了八年", "我开了", "我卖了", "我经手"]),
-]
 DEFAULT_TYPE = "解题型"
+
+# 同一条文案只调一次 LLM（classify_industry / classify_type 共享结果）
+_CLASSIFY_CACHE = {}
+
+
+def _cache_key(text: str) -> str:
+    return hashlib.md5((text or "").encode("utf-8", "ignore")).hexdigest()
+
+
+def _extract_json(content: str) -> dict:
+    """从模型输出里抠出第一个 {...} JSON 块（容忍 ```json 包裹 / 前后废话）。"""
+    if not content:
+        return {}
+    try:
+        s, e = content.find("{"), content.rfind("}")
+        if s >= 0 and e > s:
+            return json.loads(content[s:e + 1])
+    except Exception:
+        pass
+    return {}
+
+
+def _call_llm_classify(text: str):
+    """返回 (industry, type)。LLM 不可用则安全降级，不回退规则。"""
+    key = _cache_key(text)
+    if key in _CLASSIFY_CACHE:
+        return _CLASSIFY_CACHE[key]
+
+    from app import config
+    if not config.LLM_API_KEY:
+        print("[classify] 未配置 LLM_API_KEY，分类降级为 其他/解题型")
+        result = (DEFAULT_INDUSTRY, DEFAULT_TYPE)
+        _CLASSIFY_CACHE[key] = result
+        return result
+
+    industry_list = "、".join(INDUSTRY_LIST)
+    type_list = "、".join(TYPE_LIST)
+    system = (
+        "你是短视频口播文案分类器。必须从给定白名单中各选一个行业和写法类型。\n"
+        f"行业白名单：{industry_list}\n"
+        f"写法类型白名单：{type_list}\n"
+        "依据文案整体语义（而非个别关键词）判断。只输出 JSON，格式严格为 "
+        '{"industry":"...","type":"..."}，不要任何解释、不要 markdown 代码块。'
+    )
+    user = f"文案：\n{text}"
+
+    try:
+        url = config.LLM_BASE_URL.rstrip("/") + "/chat/completions"
+        payload = {
+            "model": config.LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+        }
+        headers = {
+            "Authorization": f"Bearer {config.LLM_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        # 超时较短：分类失败不应拖死提取流程，直接降级
+        r = _requests.post(url, headers=headers, json=payload, timeout=8)
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+        data = _extract_json(content)
+        industry = data.get("industry", "")
+        type_ = data.get("type", "")
+        # 校验白名单，越界一律归默认（防模型胡编行业名污染数据）
+        industry = industry if industry in INDUSTRY_LIST else DEFAULT_INDUSTRY
+        type_ = type_ if type_ in TYPE_LIST else DEFAULT_TYPE
+        result = (industry, type_)
+    except Exception as e:
+        print(f"[classify] LLM 分类调用失败，降级为 其他/解题型: {e}")
+        result = (DEFAULT_INDUSTRY, DEFAULT_TYPE)
+
+    _CLASSIFY_CACHE[key] = result
+    return result
 
 
 def classify_industry(text: str) -> str:
-    """对文案文本加权打分，返回最匹配的行业（落到 VIRAL_SCRIPTS 行业键或'其他'）。"""
-    if not text:
-        return DEFAULT_INDUSTRY
-    s = text
-    scores = {}
-    for industry, kws in INDUSTRY_KEYWORDS.items():
-        score = 0.0
-        for kw in kws:
-            weight = 1.0
-            if isinstance(kw, tuple):
-                kw, weight = kw
-            score += s.count(kw) * weight
-        if score:
-            scores[industry] = score
-    if not scores:
-        return DEFAULT_INDUSTRY
-    best = max(scores, key=scores.get)
-    top = scores[best]
-    # 若最高分过低且存在同分竞争者，判为不确定 -> 其他
-    if top < 2 and len([v for v in scores.values() if v >= top * 0.85]) > 1:
-        return DEFAULT_INDUSTRY
-    return best
+    """语义分类行业（LLM 主分类）。"""
+    return _call_llm_classify(text)[0]
 
 
 def classify_type(text: str) -> str:
-    """推断写法类型：疑问/揭秘/推荐/案例，默认解题型。"""
-    if not text:
-        return DEFAULT_TYPE
-    for t, kws in TYPE_RULES:
-        for kw in kws:
-            if kw in text:
-                return t
-    return DEFAULT_TYPE
+    """语义分类写法类型（LLM 主分类）。"""
+    return _call_llm_classify(text)[1]
+
+
+def classify(text: str):
+    """一次调用同时返回 (industry, type)，供想减少 LLM 往返的调用方使用。"""
+    return _call_llm_classify(text)
 
 
 def normalize_industry(name: str) -> str:
-    """把任意输入归一到行业键；匹配不到返回原值。"""
+    """把任意输入归一到行业白名单键；匹配不到返回原值。"""
     if not name:
         return DEFAULT_INDUSTRY
     name = name.strip()
-    if name in INDUSTRY_KEYWORDS:
+    if name in INDUSTRY_LIST:
         return name
-    return INDUSTRY_ALIASES.get(name, name)
+    # 模糊包含兜底（数据规范化，非分类规则）
+    for k in INDUSTRY_LIST:
+        if k in name or name in k:
+            return k
+    return name

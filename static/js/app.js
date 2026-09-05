@@ -695,7 +695,7 @@ function showPreview(text, sid, meta) {
 }
 
 // ===== 配音页 =====
-let _dubState = { timbre_id: 0, emotion: "自然", speed: 1.0, pitch: 1.0, volume: 50, seed: +(localStorage.getItem("lastGoodSeed") || 0) };
+let _dubState = { timbre_id: 0, emotion: "自然", speed: 1.0, pitch: 1.0, volume: 50, seed: +(localStorage.getItem("lastGoodSeed") || 0), history: [] };
 function _saveGoodSeed(seed) {
   try { localStorage.setItem("lastGoodSeed", String(seed)); } catch (e) {}
 }
@@ -880,6 +880,8 @@ async function pageDubbing(app) {
         "正在生成配音...");
       STATE.audio_id = r.audio_id;
       _saveGoodSeed(_dubState.seed);
+      // 新配音推到历史最前面 + 顶替同 audio_id（重配同一条不会重复占行）
+      _dubState.history = [r, ...(_dubState.history || []).filter(x => +x.audio_id !== +r.audio_id)];
       renderDubResult(r);
     } catch (e) {}
   };
@@ -889,6 +891,7 @@ async function pageDubbing(app) {
   async function loadExistingDubs() {
     try {
       const list = await API.get(`/scripts/${sid}/audios`);
+      _dubState.history = list || [];
       if (!list || !list.length) {
         // 新文案没有历史音频：也要把记忆中的满意 seed 回显到 UI
         setSeed(_dubState.seed);
@@ -978,7 +981,59 @@ async function pageDubbing(app) {
       });
     } catch (e) {}
   }
+  function renderDubHistory(currentAudioId) {
+    const list = _dubState.history || [];
+    if (list.length <= 1) {
+      // 只有当前这一条，不显示"历史"区，避免空折叠给用户困惑
+      return "";
+    }
+    const others = list.filter(x => +x.audio_id !== +currentAudioId);
+    const fmtDur = (s) => {
+      if (!s || !isFinite(s)) return "0:00";
+      s = Math.floor(s);
+      const m = Math.floor(s / 60), sec = String(s % 60).padStart(2, "0");
+      return m + ":" + sec;
+    };
+    const fmtTime = (ts) => {
+      // created_at 是 "YYYY-MM-DD HH:MM:SS"，转成更短的本地展示
+      const d = new Date(ts && ts.replace(" ", "T"));
+      if (isNaN(d.getTime())) return ts || "";
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    const row = (a, i) => {
+      const isCurrent = +a.audio_id === +currentAudioId;
+      return `
+        <div class="dub-hist-row" data-aid="${a.audio_id}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin-bottom:8px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:13px;font-weight:600;color:var(--text)">#${i + 1}</span>
+              <span class="chip" style="pointer-events:none;padding:2px 8px;font-size:12px">${esc(a.emotion || "自然")}</span>
+              ${isCurrent ? '<span class="chip on" style="pointer-events:none;padding:2px 8px;font-size:12px">当前显示</span>' : ""}
+              <span class="muted" style="font-size:12px">${fmtDur(a.duration)} · ${esc(fmtTime(a.created_at))}</span>
+            </div>
+          </div>
+          <button class="btn ghost sm" data-act="play" data-aid="${a.audio_id}" title="试听这条配音">▶</button>
+          <a class="btn ghost sm" href="${a.url}" download title="下载">下载</a>
+          <button class="btn ghost sm" data-act="use" data-aid="${a.audio_id}" title="用这条进数字人页">前往数字人</button>
+          <button class="btn ghost sm" data-act="del" data-aid="${a.audio_id}" title="删除该条配音（含落盘文件）" style="color:var(--danger,#e85a5a)">🗑</button>
+        </div>`;
+    };
+    return `
+      <div class="card" style="margin-top:14px" id="dubHistCard">
+        <button id="dubHistToggle" style="all:unset;cursor:pointer;display:flex;align-items:center;justify-content:space-between;width:100%">
+          <h2 style="font-size:16px;margin:0">历史配音（${others.length} 条）</h2>
+          <span class="muted" id="dubHistArrow" style="font-size:14px">▸</span>
+        </button>
+        <div id="dubHistBody" hidden style="margin-top:12px">
+          ${others.map(row).join("")}
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:8px">同一文案每次「重新配音」都会新增一条历史，原条目不会被自动删除；想清理请点右侧 🗑</div>
+      </div>`;
+  }
+
   function renderDubResult(r) {
+    STATE.audio_id = r.audio_id;
     document.getElementById("dubResult").innerHTML = `
       <div class="card" style="margin:0"><h2 style="font-size:16px">配音完成</h2>
         <div class="player">
@@ -997,7 +1052,8 @@ async function pageDubbing(app) {
           <a class="btn ghost sm" href="${r.url}" download>下载配音</a>
           <button class="btn sm" id="btnToDH">满意 前往数字人</button>
         </div>
-      </div>`;
+      </div>
+      ${renderDubHistory(r.audio_id)}`;
 
     const audio = document.getElementById("plAudio");
     const btn = document.getElementById("plPlay");
@@ -1060,6 +1116,122 @@ async function pageDubbing(app) {
 
     document.getElementById("btnRedub").onclick = document.getElementById("btnGenDub").onclick;
     document.getElementById("btnToDH").onclick = () => go("#/digital?sid=" + sid + "&audio=" + r.audio_id);
+
+    // —— 历史配音折叠区事件 ——
+    const toggle = document.getElementById("dubHistToggle");
+    if (toggle) {
+      toggle.onclick = () => {
+        const body = document.getElementById("dubHistBody");
+        const arr = document.getElementById("dubHistArrow");
+        const open = body.hidden;
+        body.hidden = !open;
+        if (arr) arr.textContent = open ? "▾" : "▸";
+      };
+    }
+    document.querySelectorAll("#dubHistCard [data-act]").forEach(btn => {
+      const aid = +btn.dataset.aid;
+      const item = (_dubState.history || []).find(x => +x.audio_id === aid);
+      if (!item) return;
+      const act = btn.dataset.act;
+      if (act === "play") {
+        btn.onclick = () => {
+          const a = document.getElementById("plAudio");
+          if (!a) return;
+          a.src = item.url;
+          // 切到该条后顺手把 STATE 同步过去（保持与渲染态一致）
+          STATE.audio_id = item.audio_id;
+          a.play();
+          const playBtn = document.getElementById("plPlay");
+          if (playBtn) playBtn.textContent = "⏸";
+        };
+      } else if (act === "use") {
+        btn.onclick = () => go("#/digital?sid=" + sid + "&audio=" + item.audio_id);
+      } else if (act === "del") {
+        btn.onclick = async () => {
+          if (!confirm(`确定删除该条配音？\n情绪：${item.emotion || "自然"} · ${fmtHistDur(item.duration)}\n将同时删除本地文件，删除后不可恢复。`)) return;
+          try {
+            await API.req("/audios/" + aid, { method: "DELETE" });
+            toast("已删除");
+            // 从本地 history 移除，若删的正好是当前显示那条，渲染新的第一条
+            const cur = +STATE.audio_id;
+            _dubState.history = (_dubState.history || []).filter(x => +x.audio_id !== aid);
+            if (cur === aid) {
+              const next = _dubState.history[0];
+              if (next) renderDubResult(next);
+              else document.getElementById("dubResult").innerHTML = "";
+            } else {
+              // 只刷新历史面板（避免当前播放卡片被重置）
+              const card = document.getElementById("dubHistCard");
+              const html = renderDubHistory(+STATE.audio_id);
+              if (card && html) card.outerHTML = html;
+              else if (!html && card) card.remove();
+              // 重新绑一次新区域的事件
+              rebindDubHistEvents();
+            }
+          } catch (e) { toast(e.message || "删除失败"); }
+        };
+      }
+    });
+  }
+
+  function rebindDubHistEvents() {
+    // 删除后保留当前播放卡：单独重绑一次折叠 + 行内按钮（不重渲染整块 #dubResult）
+    const toggle = document.getElementById("dubHistToggle");
+    if (toggle) {
+      toggle.onclick = () => {
+        const body = document.getElementById("dubHistBody");
+        const arr = document.getElementById("dubHistArrow");
+        const open = body.hidden;
+        body.hidden = !open;
+        if (arr) arr.textContent = open ? "▾" : "▸";
+      };
+    }
+    document.querySelectorAll("#dubHistCard [data-act]").forEach(btn => {
+      const aid = +btn.dataset.aid;
+      const item = (_dubState.history || []).find(x => +x.audio_id === aid);
+      if (!item) return;
+      const act = btn.dataset.act;
+      if (act === "play") {
+        btn.onclick = () => {
+          const a = document.getElementById("plAudio");
+          if (!a) return;
+          a.src = item.url;
+          STATE.audio_id = item.audio_id;
+          a.play();
+          const playBtn = document.getElementById("plPlay");
+          if (playBtn) playBtn.textContent = "⏸";
+        };
+      } else if (act === "use") {
+        btn.onclick = () => go("#/digital?sid=" + sid + "&audio=" + item.audio_id);
+      } else if (act === "del") {
+        btn.onclick = async () => {
+          if (!confirm(`确定删除该条配音？\n情绪：${item.emotion || "自然"} · ${fmtHistDur(item.duration)}\n将同时删除本地文件，删除后不可恢复。`)) return;
+          try {
+            await API.req("/audios/" + aid, { method: "DELETE" });
+            toast("已删除");
+            const cur = +STATE.audio_id;
+            _dubState.history = (_dubState.history || []).filter(x => +x.audio_id !== aid);
+            if (cur === aid) {
+              const next = _dubState.history[0];
+              if (next) renderDubResult(next);
+              else document.getElementById("dubResult").innerHTML = "";
+            } else {
+              const card = document.getElementById("dubHistCard");
+              const html = renderDubHistory(+STATE.audio_id);
+              if (card && html) card.outerHTML = html;
+              else if (!html && card) card.remove();
+              rebindDubHistEvents();
+            }
+          } catch (e) { toast(e.message || "删除失败"); }
+        };
+      }
+    });
+  }
+
+  function fmtHistDur(s) {
+    if (!s || !isFinite(s)) return "0:00";
+    s = Math.floor(s);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
   }
 }
 
