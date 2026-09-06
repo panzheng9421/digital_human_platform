@@ -2,13 +2,15 @@
 import os
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 
 from app import db, auth
-from app.config import STORAGE_DIR, AVATAR_PROVIDER, COSYVOICE_FORMAT, ALLOWED_AVATAR_FORMATS, MAX_AVATAR_SIZE_MB
+from app.config import (STORAGE_DIR, AVATAR_PROVIDER, COSYVOICE_FORMAT, ALLOWED_AVATAR_FORMATS,
+                        MAX_AVATAR_SIZE_MB, TTS_DEBUG_LOG, TTS_ENGINE)
 from app.task_manager import (create_task, update, get_task, set_result,
                               start_progress_ticker)
 from app.data import viral_scripts as vs
@@ -18,6 +20,8 @@ from app.services import media_utils as mu
 from app.services import heygem_client as hg
 from app.services import oss_client as oss
 from app.services import cosyvoice_client as cv
+from app.services import minimax_client as mmx
+from app.services.tts_enricher import enrich_for_tts, TTSEnrichError
 
 
 def _register_timbre(ref_path: str) -> str:
@@ -25,6 +29,102 @@ def _register_timbre(ref_path: str) -> str:
     （text 仅 Qwen-TTS 复刻 qwen-voice-enrollment 支持），因此无需先 ASR 转写逐字稿。
     复刻效果由官方可选参数 language_hints 辅助（见 cosyvoice_client.upload_reference_audio）。"""
     return cv.upload_reference_audio(ref_path)
+
+
+# UI 情绪中文 → MiniMax emotion 枚举（前端情绪按钮组，"自然"=不传=AI 按段自动判断）
+_MM_EMOTION_MAP = {"高兴": "happy", "伤心": "sad", "生气": "angry", "害怕": "fearful",
+                   "厌恶": "disgusted", "惊讶": "surprised", "平静": "calm", "生动": "fluent"}
+
+
+def _mm_voice_db_write(timbre_id: int, vid: str) -> None:
+    """MiniMax voice_id 正式落库 timbres.mm_voice_id（按音色行归属，2026-09-06 老板拍板）。
+    vid 传空串=清空（voice 失效时与 json 缓存双清）。写库失败打日志不中断配音
+    （克隆已完成、json 备份仍在，失败只影响下次少一层缓存）。"""
+    if not timbre_id:
+        return
+    try:
+        conn = db.get_conn()
+        conn.execute("UPDATE timbres SET mm_voice_id=? WHERE id=?", (vid or None, timbre_id))
+        conn.commit()
+        conn.close()
+        print(f"[minimax] voice_id 已写库: timbre_id={timbre_id} mm_voice_id={vid or '(清空)'}")
+    except Exception as e:
+        print(f"[minimax] voice_id 写库失败(不影响本次配音): {e}")
+
+
+def _minimax_dub(text: str, ref_path: str, speed: float, pitch: float,
+                 timbre_id: int = 0, mm_voice_id: str = "", emotion: str = "") -> bytes:
+    """MiniMax 配音链路：DeepSeek 富化 → 取/克隆 voice_id → 整篇单请求(自然模式)。
+
+    强制走 DeepSeek 富化（配音质量靠富化出 <#x#> 停顿/(chuckle) 语气词，原文直发是垃圾，绝不降级）。
+    整篇单请求、不传 emotion，由 MiniMax 模型按整篇文本自动匹配情绪（自然模式）。
+    MiniMax 公开 API 不支持文本内嵌情绪标签，段级情绪起伏在 T2A v2 下无法零接缝实现，承认此限制。
+    富化失败抛 TTSEnrichError（不生成音频）；voice 失效（7天不用被删）自动 json+库双清、重克隆整轮重试一次。
+    参数映射：speed = UI语速 × 富化首个全局语速标注(cap[0.5,2])；
+              pitch = UI pitch(0.5~2.0) 线性映射[-12,12](1.0→0)+富化首个全局尾音(上扬+2/下沉-2)；
+              vol = 1.0。
+    voice_id 存储：timbres.mm_voice_id(按音色行归属)；storage/minimax_voice.json 为历史备份(克隆后回写)。
+    """
+    # 强制富化（无开关、不降级原文直发）
+    enr = enrich_for_tts(text, persona="laopan", engine="minimax")
+    payload = enr.get("payload") or text
+    mm_speed = max(0.5, min(2.0, speed * float(enr.get("speed") or 1.0)))
+    mm_pitch = max(-12, min(12, int(round((pitch - 1.0) * 12)) + int(enr.get("pitch") or 0)))
+
+    single_text = payload  # 自然模式：不加情绪标签
+    plan = [{"text": single_text, "emotion": None, "speed": mm_speed, "pitch": mm_pitch}]
+    print(f"[minimax] 单请求合成(自然模式): {len(single_text)}字 speed={mm_speed} pitch={mm_pitch} "
+          f"(UI: speed={speed} pitch={pitch})")
+    # voice_id 优先级：数据库 mm_voice_id(按音色归属) → json 备份(sample 匹配才用，命中即回写库) → 现场克隆
+    vid = (mm_voice_id or "").strip()
+    if vid:
+        print(f"[minimax] 使用数据库音色: timbre_id={timbre_id} voice_id={vid}")
+    if not vid:
+        vid = mmx.cached_voice_for(ref_path)
+        if vid:
+            print(f"[minimax] 库无记录，json 备份命中(sample 匹配): {vid}，回写数据库")
+            _mm_voice_db_write(timbre_id, vid)
+
+    def _synth_all(v: str) -> bytes:
+        """按计划合成：单段直返；多段并行请求后 ffmpeg 按序拼接。"""
+        if len(plan) == 1:
+            return mmx.synthesize(plan[0]["text"], v, speed=plan[0]["speed"],
+                                  pitch=plan[0]["pitch"], emotion=plan[0]["emotion"])
+        with ThreadPoolExecutor(max_workers=min(4, len(plan))) as ex:
+            audios = list(ex.map(
+                lambda p: mmx.synthesize(p["text"], v, speed=p["speed"],
+                                         pitch=p["pitch"], emotion=p["emotion"]), plan))
+        tmpdir = os.path.join(STORAGE_DIR, "temp", f"mmcat_{int(time.time() * 1000)}")
+        return mu.concat_mp3(audios, tmpdir)
+
+    # 两轮：首轮合成若报 voice 失效（7天不用被删），json+库双清、重克隆后整轮重试。
+    # 失效判定用**明确关键词白名单**（2026-09-07 事故修复）：原写法 `if "voice" not in
+    # str(e2)` 会被报错里的参数回显 "voice=laopan1788700865" 命中——余额不足(1008)、
+    # RPM 限流(1002) 都被误判成音色失效 → 库里 mm_voice_id 被清空、json 备份被删、
+    # 走重克隆烧钱。改为只认真正的失效措辞；认不出就原样上抛（宁可不重克隆，
+    # 也绝不误清已付费克隆的音色）。
+    _VOICE_DEAD_HINTS = ("voice not exist", "voice does not exist", "voice_id not exist",
+                         "invalid voice", "voice expired", "voice deleted", "voice is deleted",
+                         "音色不存在", "音色已失效", "音色已过期", "voice 不存在", "voice 已失效")
+    last_err = None
+    for _attempt in range(2):
+        if not vid:
+            vid = f"laopan{int(time.time())}"
+            print(f"[minimax] 无缓存音色，开始克隆: sample={ref_path} voice_id={vid}")
+            vid = mmx.clone_voice(ref_path, vid)
+            _mm_voice_db_write(timbre_id, vid)
+        try:
+            return _synth_all(vid)
+        except Exception as e2:
+            last_err = e2
+            print(f"[minimax] 合成失败(attempt={_attempt + 1}/2): {type(e2).__name__}: {e2}")
+            if not any(h in str(e2).lower() for h in _VOICE_DEAD_HINTS):
+                print(f"[minimax] 非音色失效错误，不清理已克隆音色，直接终止: {e2}")
+                raise
+            mmx.drop_cached_voice()
+            _mm_voice_db_write(timbre_id, "")
+            vid = ""
+    raise RuntimeError(f"MiniMax 合成失败（已重试克隆）: {last_err}")
 
 api = APIRouter(prefix="/api")
 get_user = auth.get_current_user
@@ -605,7 +705,40 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
         est_sec = max(2.0, len(text or "") / max(0.5, TTS_CHARS_PER_SEC * (speed or 1.0)))
         ticker = start_progress_ticker(tid, 15, 72, est_sec)
         try:
-            if cv.available() and timbre_id:
+            if timbre_id and TTS_ENGINE == "minimax":
+                # —— MiniMax speech-2.8-hd 分支（老板拍板 2026-09-06，从 CosyVoice 切换）——
+                # key 未配置直接报错不静默（走占位会生成假音频，误导验收）。
+                if not mmx.available():
+                    raise RuntimeError(
+                        "MINIMAX_API_KEY 未配置：把 set MINIMAX_API_KEY=你的key 贴进 start.bat 后重启")
+                try:
+                    conn = db.get_conn()
+                    t = conn.execute("SELECT * FROM timbres WHERE id=? AND user_id=?",
+                                     (timbre_id, user["id"])).fetchone()
+                    conn.close()
+                    ref_path = os.path.join(STORAGE_DIR, t["file_path"]) if t and t["file_path"] else None
+                    if not ref_path or not os.path.exists(ref_path):
+                        raise RuntimeError("音色文件缺失")
+                    audio_bytes = _minimax_dub(text, ref_path, speed, pitch,
+                                               timbre_id=timbre_id,
+                                               mm_voice_id=(t["mm_voice_id"] or "") if t else "",
+                                               emotion=emotion)
+                    ext = "mp3"
+                    out = out.rsplit(".", 1)[0] + ".mp3"
+                    with open(out, "wb") as f:
+                        f.write(audio_bytes)
+                    duration = _audio_duration(out, ext)
+                    provider = "minimax"
+                except Exception as e:
+                    if isinstance(e, TTSEnrichError):
+                        # 富化失败 = 任务失败，不回退占位音频（老板：失败就不要生成，浪费 token）
+                        raise
+                    # 任意失败 -> 回退占位 wav，保证流程不中断（与 CosyVoice 分支同策略）
+                    note = f"MiniMax 失败已回退占位音频: {e}"
+                    out = out.rsplit(".", 1)[0] + ".wav"
+                    ext = "wav"
+                    mu.gen_wav(text, emotion, speed, out)
+            elif cv.available() and timbre_id:
                 # —— 真实声音克隆分支：CosyVoice2（替代 fish+asr）——
                 try:
                     conn = db.get_conn()
@@ -627,6 +760,19 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
                     # 现在不再写死 "用XX的语气说"，而是从 cosyvoice_client.EMOTION_INSTRUCTIONS 取多维度描述
                     # （情感 + 语气 + 场景），并且不写语速/音调（由 speech_rate / pitch_rate 参数控制）。
                     instruct = cv.build_instruction(emotion)
+                    # —— 导演台式自动富化：口播稿 -> 带 SSML 表演标注的文本 + 音色锚定 instruction ——
+                    # 全局 speed 参数（Form 传入）与表演语速 <prosody rate> 互不冲突，各自独立。
+                    tts_text = text
+                    tts_instruct = instruct
+                    # 富化失败直接抛 TTSEnrichError → 任务失败（下方 except 对其原样上抛），
+                    # 不回退原稿/占位——老板拍板：失败就不要生成，浪费 token。
+                    enr = enrich_for_tts(text, persona="laopan")
+                    tts_text = enr.get("ssml_text") or text
+                    if instruct is None and enr.get("instruction"):
+                        tts_instruct = enr["instruction"]
+                    if TTS_DEBUG_LOG:
+                        print(f"[tts_enrich] 富化完成: 原稿{len(text)}字 -> SSML {len(tts_text)}字"
+                              f"，instruction={'有' if tts_instruct else '无'}")
                     for _attempt in range(2):
                         if not raid:
                             # 首次 / raid 失效：重新注册音色，id 缓存到 timbre 行
@@ -636,11 +782,13 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
                                          (raid, timbre_id))
                             conn.commit(); conn.close()
                         try:
-                            audio_bytes = cv.synthesize(text, raid, speed=speed, instruct=instruct,
+                            audio_bytes = cv.synthesize(tts_text, raid, speed=speed, instruct=tts_instruct,
                                                         pitch=pitch, volume=volume, seed=seed)
                             break
                         except Exception as e2:
                             last_err = e2
+                            # 调试期必须看到百炼真实报错（标签不认/参数错/XML非法都在这里暴露）
+                            print(f"[bailian] /speech 合成失败(attempt={_attempt + 1}/2): {type(e2).__name__}: {e2}")
                             # raid 可能失效（服务重启/缓存清理），清空后用本地音频重传重取一次
                             raid = ""
                             continue
@@ -651,6 +799,9 @@ def dubbing_generate(script_id: int = Form(...), timbre_id: int = Form(0),
                     duration = _audio_duration(out, ext)
                     provider = "cosyvoice"
                 except Exception as e:
+                    if isinstance(e, TTSEnrichError):
+                        # 富化失败 = 任务失败，不回退占位音频（老板：失败就不要生成，浪费 token）
+                        raise
                     # 任意失败 -> 回退占位 wav，保证流程不中断
                     msg = str(e)
                     if "格式不支持" in msg or "suffix" in msg or "InvalidFormData" in msg:

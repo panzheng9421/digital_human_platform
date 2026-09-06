@@ -57,6 +57,21 @@ DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
 DASHSCOPE_WORKSPACE_ID = os.environ.get("DASHSCOPE_WORKSPACE_ID", "")
 DASHSCOPE_TTS_MODEL = os.environ.get("DASHSCOPE_TTS_MODEL", "cosyvoice-v3.5-plus")
 DASHSCOPE_VOICE_ENROLLMENT_MODEL = os.environ.get("DASHSCOPE_VOICE_ENROLLMENT_MODEL", "voice-enrollment")
+# 2.8) 配音链调试打印总开关（默认关）：控制 DeepSeek 入参/出参、百炼入参/文本、音色注册等调试行。
+#      永远不受此开关控制的行：[tts_enrich] 分片（老板要求常开）、[bailian] 合成失败（仅出错时打）。
+TTS_DEBUG_LOG = os.environ.get("TTS_DEBUG_LOG", "0") == "1"
+# 2.10) MiniMax TTS（speech-2.8-hd）：老板拍板 2026-09-06 从 CosyVoice 切换。
+#      CosyVoice v3.5-plus 实测 <prosody> 被拒（411）且无局部韵律；MiniMax 2.8 系列独有
+#      语气词标签 (chuckle)/(sighs)/(breath) 等 19 种 + 文本内停顿 <#x#>。
+#      词级韵律（重音/局部变速）两家引擎都没有——丢弃并打日志，二期句级拼接解决。
+#      API key 由老板贴进 start.bat（set MINIMAX_API_KEY=...），GroupId 默认已定。
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "minimax")   # minimax | cosyvoice
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
+# 中文站官方文档（老板 2026-09-06 核验）：t2a_v2 主域名 api.minimax.cn（备用 api-bj.minimaxi.com），
+# 克隆/上传官方指南域名 api.minimaxi.com——两域名并存。当前版接口 URL **不带 GroupId**。
+MINIMAX_BASE_URL = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.cn")
+MINIMAX_GROUP_ID = os.environ.get("MINIMAX_GROUP_ID", "2078762616351625924")  # 留档，新版接口已不需要
+MINIMAX_MODEL = os.environ.get("MINIMAX_MODEL", "speech-2.8-hd")
 
 # 3) 数字人（对口型视频）：
 #    AVATAR_PROVIDER = "mock"    本地产出占位视频（无需 GPU，开发/演示用）
