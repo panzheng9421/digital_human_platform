@@ -23,6 +23,52 @@ except Exception:
     _FFMPEG = None
 
 
+def concat_mp3(parts: list, workdir: str) -> bytes:
+    """多段 mp3 按序拼接（ffmpeg concat demuxer 流拷贝，不重编码）。
+
+    分段合成的段级情绪链路用（2026-09-06 老板拍板）：MiniMax emotion 是请求级参数，
+    段级情绪=每段单独合成，这里把 mp3 片段拼回一条。单段直接原样返回不进 ffmpeg。
+    失败抛 RuntimeError（错误日志由调用方/本函数打印，不吞）。
+    """
+    if not parts:
+        raise ValueError("concat_mp3: 空片段列表")
+    if len(parts) == 1:
+        return parts[0]
+    if not _FFMPEG:
+        raise RuntimeError("本环境无 ffmpeg，无法拼接多段音频")
+    # 强制绝对路径（2026-09-06 实测坑）：ffmpeg concat demuxer 把 list.txt 里的相对路径
+    # 按 list 文件所在目录解析，调用方传相对 workdir 会路径翻倍打不开文件。
+    workdir = os.path.abspath(workdir)
+    os.makedirs(workdir, exist_ok=True)
+    paths = []
+    try:
+        for i, b in enumerate(parts):
+            p = os.path.join(workdir, f"_seg{i:02d}.mp3")
+            with open(p, "wb") as f:
+                f.write(b)
+            paths.append(p)
+        lst = os.path.join(workdir, "_concat.txt")
+        with open(lst, "w", encoding="utf-8") as f:
+            for p in paths:
+                f.write("file '" + p.replace("\\", "/") + "'\n")
+        out = os.path.join(workdir, "_out.mp3")
+        cmd = [_FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+            raise RuntimeError(f"ffmpeg 拼接失败: {(r.stderr or '')[-300:]}")
+        with open(out, "rb") as f:
+            data = f.read()
+        print(f"[media] mp3 拼接完成: {len(parts)}段 -> {len(data)}字节")
+        return data
+    finally:
+        try:
+            for p in os.listdir(workdir):
+                os.remove(os.path.join(workdir, p))
+            os.rmdir(workdir)
+        except Exception as e:
+            print(f"[media] 拼接临时目录清理失败(不影响结果): {e}")
+
+
 def _pil_font(size, bold=False):
     """加载 Pillow 字体。bold=True 时优先用系统粗体/黑体，让封面大标题更厚重。"""
     candidates = []

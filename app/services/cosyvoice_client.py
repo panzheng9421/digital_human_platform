@@ -23,6 +23,7 @@ from app.config import (
     DASHSCOPE_TTS_MODEL,
     DASHSCOPE_VOICE_ENROLLMENT_MODEL,
     COSYVOICE_FORMAT,
+    TTS_DEBUG_LOG,
 )
 from app.services import oss_client as oss
 
@@ -246,9 +247,10 @@ def upload_reference_audio(local_path: str) -> str:
     _url = _log_payload["input"]["url"]
     if len(_url) > 120:
         _log_payload["input"]["url"] = _url[:120] + f"...[已截断，共{len(_url)}字符]"
-    print(f"[bailian] 音色注册 → POST {enroll_url}")
-    print(f"[bailian] 音色注册入参(实际发送): {json.dumps(_log_payload, ensure_ascii=False)}")
-    print(f"[bailian] 音色注册音频: file={local_path} size={os.path.getsize(local_path)}B")
+    if TTS_DEBUG_LOG:
+        print(f"[bailian] 音色注册 → POST {enroll_url}")
+        print(f"[bailian] 音色注册入参(实际发送): {json.dumps(_log_payload, ensure_ascii=False)}")
+        print(f"[bailian] 音色注册音频: file={local_path} size={os.path.getsize(local_path)}B")
     try:
         resp = _http_post_json(enroll_url, payload, timeout=120)
     finally:
@@ -256,14 +258,17 @@ def upload_reference_audio(local_path: str) -> str:
         if object_key:
             try:
                 oss._get_bucket().delete_object(object_key)
-                print(f"[bailian] 已清理 OSS 临时音色文件: {object_key}")
+                if TTS_DEBUG_LOG:
+                    print(f"[bailian] 已清理 OSS 临时音色文件: {object_key}")
             except Exception as e:
-                print(f"[bailian] 清理 OSS 临时音色文件失败: {e}")
+                if TTS_DEBUG_LOG:
+                    print(f"[bailian] 清理 OSS 临时音色文件失败: {e}")
 
     _resp_str = json.dumps(resp, ensure_ascii=False)
     if len(_resp_str) > 400:
         _resp_str = _resp_str[:400] + f"...[已截断，共{len(_resp_str)}字符]"
-    print(f"[bailian] 音色注册出参: {_resp_str}")
+    if TTS_DEBUG_LOG:
+        print(f"[bailian] 音色注册出参: {_resp_str}")
 
     # 返回字段可能是 voice_id 或 voice；优先 voice_id
     voice_id = resp.get("output", {}).get("voice_id") if isinstance(resp.get("output"), dict) else None
@@ -312,7 +317,7 @@ def synthesize(text: str, reference_audio_id: str, speed: float = 1.0,
     # 先清洗 markdown 再校验：LLM 改写稿偶尔整篇带符号，清洗后可能变空
     raw_len = len(text or "")
     text = _strip_markdown(text)
-    if raw_len and len(text) != raw_len:
+    if raw_len and len(text) != raw_len and TTS_DEBUG_LOG:
         print(f"[bailian] 已清洗 markdown 符号: {raw_len} -> {len(text)} 字符")
     if not text:
         raise RuntimeError("合成文本不能为空")
@@ -349,17 +354,19 @@ def synthesize(text: str, reference_audio_id: str, speed: float = 1.0,
         seed=seed,
         instruction=instruction,
     )
-    print(f"[bailian] /speech 入参(实际发送): " + json.dumps(
-        {k: (v.value if hasattr(v, "value") else v) for k, v in synth_kwargs.items()},
-        ensure_ascii=False))
-    print(f"[bailian] /speech 文本: len={len(text)} head={text[:40]!r}")
+    if TTS_DEBUG_LOG:
+        print(f"[bailian] /speech 入参(实际发送): " + json.dumps(
+            {k: (v.value if hasattr(v, "value") else v) for k, v in synth_kwargs.items()},
+            ensure_ascii=False))
+        print(f"[bailian] /speech 文本(完整,含SSML): len={len(text)} text={text!r}")
     synthesizer = SpeechSynthesizer(**synth_kwargs)
 
     # 非流式 call 返回完整音频 bytes
     audio_bytes = synthesizer.call(text)
     req_id = synthesizer.get_last_request_id() or ""
     first_delay = synthesizer.get_first_package_delay()
-    print(f"[bailian] /speech 出参: request_id={req_id} first_package_delay={first_delay}ms bytes={len(audio_bytes or b'')}")
+    if TTS_DEBUG_LOG:
+        print(f"[bailian] /speech 出参: request_id={req_id} first_package_delay={first_delay}ms bytes={len(audio_bytes or b'')}")
 
     if not audio_bytes:
         raise RuntimeError("百炼 CosyVoice 合成返回空音频")

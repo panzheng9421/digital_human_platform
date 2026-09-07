@@ -11,7 +11,6 @@
 import os
 import re
 import time
-import contextlib
 from urllib.parse import urlparse
 
 import requests
@@ -25,8 +24,15 @@ _BYPASS_PROXY_HOSTS = (
     "douyin.com", "iesdouyin.com", "amemv.com", "douyinvod.com",
     "snssdk.com", "tiktokv.com", "byteimg.com", "douyinpic.com",
 )
-_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-                   "ALL_PROXY", "all_proxy")
+# 代理一律用「实例级/请求级参数」控制，绝不读写 os.environ。原因（本机实测，2026-09-06）：
+#   1) 不要 pop environ：Windows 上清空 HTTP_PROXY 等变量后，urllib 的 getproxies() 会
+#      fallback 到「系统注册表代理」（本机 HKCU\...\Internet Settings\ProxyServer=
+#      127.0.0.1:7897），请求反而绕回被抖音风控的代理出口，报 Fresh cookies /
+#      SSL UNEXPECTED_EOF。实测：pop environ → 必失败；不 pop → 成功。
+#   2) ydl_opts["proxy"]="" 本身就是「显式禁用全部代理」（含注册表），这才是真直连，
+#      不需要也不应该再去动 environ。
+#   3) 顺带解决并发隐患：os.environ 是进程全局的，多线程 pop/restore 必然互相踩，
+#      改成 per-request 参数后天然线程安全。
 
 
 def _extract_url(text: str) -> str:
@@ -213,18 +219,27 @@ def transcribe_file_ts(local_path: str, timeout: int = 180) -> list:
         oss.delete_object(key)
 
 
-def _download_direct(url: str, dest_dir: str) -> str:
+def _download_direct(url: str, dest_dir: str, no_proxy: bool = False) -> str:
+    """直链下载。no_proxy=True 时禁用代理。
+
+    用独立 Session 的 trust_env 控制代理，绝不去改进程级 os.environ——
+    os.environ 是进程全局的，FastAPI 多线程并发下 pop/restore 会互相踩，
+    导致"提取时好时坏"。per-request 参数天然线程安全。
+    """
     ext = os.path.splitext(url.split("?")[0])[1].lower() or ".mp4"
     dest = os.path.join(dest_dir, f"dl_{int(time.time() * 1000)}{ext}")
-    with requests.get(url, stream=True, timeout=120) as r:
-        r.raise_for_status()
-        ct = (r.headers.get("Content-Type") or "").lower()
-        if "text/html" in ct:
-            raise RuntimeError(f"直链返回的是网页(html)，不是音视频：Content-Type={ct}")
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(8192):
-                if chunk:
-                    f.write(chunk)
+    with requests.Session() as s:
+        if no_proxy:
+            s.trust_env = False  # 忽略环境变量里的代理，直连
+        with s.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if "text/html" in ct:
+                raise RuntimeError(f"直链返回的是网页(html)，不是音视频：Content-Type={ct}")
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    if chunk:
+                        f.write(chunk)
     if os.path.getsize(dest) < 1024:
         os.remove(dest)
         raise RuntimeError("下载文件小于 1KB，疑似未拿到真实音视频")
@@ -278,22 +293,6 @@ def _should_bypass_proxy(url: str) -> bool:
     except Exception:
         return False
     return bool(host) and any(host == h or host.endswith("." + h) for h in _BYPASS_PROXY_HOSTS)
-
-
-@contextlib.contextmanager
-def _proxy_env(bypass: bool):
-    """临时清空/恢复代理环境变量（作用于 os.environ，requests 与 yt-dlp 都会读到）。
-
-    bypass=False 时不做任何改动，保持进程原有环境。
-    """
-    if not bypass:
-        yield
-        return
-    saved = {k: os.environ.pop(k) for k in _PROXY_ENV_KEYS if k in os.environ}
-    try:
-        yield
-    finally:
-        os.environ.update(saved)
 
 
 def _short_err(e, limit: int = 220) -> str:
@@ -357,8 +356,12 @@ def download_video(url: str, dest_dir: str):
       2) 固定默认路径 storage/cookies/douyin_cookies.txt（推荐：丢文件即用）
       3) 以上都没有时，回退读取本机 Chrome 登录态（cookiesfrombrowser，受 Chrome ABE 限制可能失败）
 
-    网络策略：抖音系域名先「直连（绕开代理）」再回退「走代理」——实测本机开了 127.0.0.1:7897 代理时，
-    抖音会对代理出口报 SSL UNEXPECTED_EOF / Fresh cookies needed，直连反而一次就通。
+    网络策略：抖音系域名依次尝试 [直连, 走代理]，谁先成用谁。
+    直连靠 ydl_opts["proxy"]="" 显式禁用全部代理；**不要**去清空 os.environ——Windows 上清空后
+    urllib 会 fallback 到系统注册表代理（本机 127.0.0.1:7897），反而绕回被风控的出口
+    （详见文件头注释与 2026-09-06 实测：pop environ 必失败、不 pop 才成）。
+    实测「直连/走代理」哪条能通会随抖音风控波动（2026-09-06 这次是直连失败、走代理成功），
+    所以保留两种都试的回退顺序，别写死单一策略。
     下载后校验文件确为音视频，避免把登录墙 html 送百炼产生误导性 400。
     """
     cookiefile = _resolve_cookiefile()
@@ -374,8 +377,8 @@ def download_video(url: str, dest_dir: str):
     for no_proxy in orders:
         tag = "直连(绕过代理)" if no_proxy else "走代理"
         try:
-            with _proxy_env(no_proxy):
-                return _download_ytdlp(url, dest_dir, cookiefile, no_proxy)
+            # 代理由 _download_ytdlp 的 ydl_opts["proxy"] 控制，不动 os.environ
+            return _download_ytdlp(url, dest_dir, cookiefile, no_proxy)
         except Exception as e:
             errs.append(f"yt-dlp {tag}失败: {_short_err(e)}")
             print(f"[asr] yt-dlp {tag}失败：{_short_err(e)}")
@@ -384,8 +387,7 @@ def download_video(url: str, dest_dir: str):
     for no_proxy in orders:
         tag = "直连(绕过代理)" if no_proxy else "走代理"
         try:
-            with _proxy_env(no_proxy):
-                return _download_direct(url, dest_dir), {}
+            return _download_direct(url, dest_dir, no_proxy=no_proxy), {}
         except Exception as e:
             errs.append(f"直链 {tag}失败: {_short_err(e)}")
 
@@ -405,13 +407,9 @@ def extract_from_link(url: str) -> dict:
     try:
         return {"text": transcribe_file(path), "meta": meta}
     finally:
-        # yt-dlp 下载的本地中转文件用完即删（失败仅警告，不影响主流程）
-        try:
-            if path and os.path.exists(path):
-                os.remove(path)
-                print(f"[asr] 已清理本地中转文件: {path}")
-        except Exception as e:
-            print(f"[asr] 清理本地中转文件失败(可忽略): {path} -> {e}")
+        # 本地视频保留（老板要求：提取到的视频不删），仅打印留存位置便于后续复用，不做清理
+        if path and os.path.exists(path):
+            print(f"[asr] 本地视频已保留(未清理): {path}")
 
 
 def extract_from_file(local_path: str) -> dict:

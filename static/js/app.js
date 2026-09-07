@@ -699,7 +699,7 @@ let _dubState = { timbre_id: 0, emotion: "自然", speed: 1.0, pitch: 1.0, volum
 function _saveGoodSeed(seed) {
   try { localStorage.setItem("lastGoodSeed", String(seed)); } catch (e) {}
 }
-const EMOTIONS = ["自然", "嫌弃", "高兴", "伤心", "说教", "激动", "生气"];
+const EMOTIONS = ["自然", "高兴", "伤心", "生气", "害怕", "厌恶", "惊讶", "平静", "生动"];
 
 async function pageDubbing(app) {
   const { sid } = qp();
@@ -739,7 +739,7 @@ async function pageDubbing(app) {
 
       <label style="margin-top:16px">情绪调节</label>
       <div class="chips" id="emoChips">${EMOTIONS.map(e => `<div class="chip ${e === _dubState.emotion ? "on" : ""}" data-e="${e}">${e}</div>`).join("")}</div>
-      <div class="muted" style="margin-top:4px;font-size:12px">情绪会生成「语气 + 音调走向 + 场景」指令；选「自然」则不传指令，让模型按你的本音发挥；下方滑块做全局语速 / 音高微调</div>
+      <div class="muted" style="margin-top:4px;font-size:12px">选具体情绪 = 通篇强制该情绪；选「自然」不强制，AI 按每段稿件的剧情自动判断情绪（惊讶→平静→转折逐段切换）；下方滑块做全局语速 / 音高微调</div>
 
       <div style="margin-top:10px">
         <button class="btn ghost sm" id="btnToggleAdv">高级参数 ▼</button>
