@@ -6,17 +6,43 @@ call venv\Scripts\activate
 REM ===== 安全密钥（JWT 签名，必须设置；本地开发用固定值即可）=====
 set DH_SECRET_KEY=YOUR_DH_SECRET_KEY
 
-REM ===== 配音（声音克隆）：CosyVoice2 on PAI-EAS（替代 fish+asr）=====
-REM 1=启用真实声音克隆；0=占位音频。端点与 token 来自 PAI-EAS 部署的 CosyVoice2 服务
+REM ===== 调试打印开关：1=打印各 TTS 引擎完整入参/出参 JSON body（含 [DEBUG-COSYVOICE-BODY] / [DEBUG-T2A-BODY]）=====
+set TTS_DEBUG_LOG=1
+
+REM ===== 全局 TTS 引擎切换开关（改这里即可，重启服务生效）=====
+REM 可选值: minimax  (默认，走上方的 MINIMAX_API_KEY，speech-2.8-hd)
+REM          cosyvoice (走下方 CosyVoice，需 COSYVOICE_ENABLED=1 + 百炼 DASHSCOPE 配置，且页面选 CosyVoice 音色)
+set TTS_ENGINE=minimax
+REM set TTS_ENGINE=cosyvoice
+
+REM ===== 配音主引擎：MiniMax speech-2.8-hd（TTS_ENGINE 默认 minimax）=====
+REM 把等号后面填成你的 MiniMax API Key（platform.minimaxi.com > 账户管理 > 接口密钥）
+REM 当前版官方接口 URL 不需要 GroupId；合成主域名 api.minimax.cn、克隆 api.minimaxi.com（见 minimax_client.py）
+set MINIMAX_API_KEY=YOUR_MINIMAX_API_KEY
+
+REM ===== 配音备用引擎：CosyVoice（TTS_ENGINE=cosyvoice 时才走；MiniMax 出问题可切回对照）=====
+REM 1=启用真实声音克隆；0=占位音频。合成走阿里百炼 DashScope（见下方 DASHSCOPE_WORKSPACE_ID / DASHSCOPE_TTS_MODEL），不再用 PAI-EAS
 set COSYVOICE_ENABLED=1
-set COSYVOICE_ENDPOINT=http://cosyvoice001.<your_id>.cn-hangzhou.pai-eas.aliyuncs.com
-set COSYVOICE_TOKEN=YOUR_COSYVOICE_TOKEN
 set COSYVOICE_FORMAT=wav
 REM 合成模式固定在 cosyvoice_client.SYNTHESIS_MODE（自然语言复刻），此处无需配置
 
 REM ===== 文案提取 ASR：阿里百炼 Paraformer-v2（API Key 即百炼/DashScope 的 API-KEY）=====
 REM 把等号后面填成你的百炼 API Key（dashscope.aliyuncs.com 控制台获取）；留空则提取文案回退占位
 set DASHSCOPE_API_KEY=YOUR_DASHSCOPE_API_KEY
+
+REM ===== 阿里百炼语音合成 / 声音复刻（备用引擎 CosyVoice 用，主引擎 MiniMax 不读这段）=====
+REM 业务空间 Workspace ID，形如 ws-xxxx；留空则走默认公共 endpoint
+REM ⚠️ 只能填**短 ID**（ws-xxxx 或纯数字），**绝不能填 API Key**！
+REM    Key 有 100+ 字符，会被拼进 https://{ws}.cn-beijing.maas.aliyuncs.com，
+REM    导致 DNS label 超过 63 字符上限，urllib 抛 'idna' codec ... label too long，
+REM    音色注册(cosyvoice_client.py:155)与合成(:328 _ws_base_url)双炸。
+set DASHSCOPE_WORKSPACE_ID=
+REM 合成模型：默认 cosyvoice-v3.5-plus（超高表现力，声音克隆/韵律/音质全面升级）
+set DASHSCOPE_TTS_MODEL=cosyvoice-v3.5-plus
+
+REM ===== 文案改写 LLM：DeepSeek（OpenAI 兼容，默认 api.deepseek.com/v1）=====
+REM 填你的 DeepSeek API Key（platform.deepseek.com 控制台获取）；留空则改写回退规则模板
+set LLM_API_KEY=YOUR_DEEPSEEK_API_KEY
 
 REM ===== 数字人推理服务配置（EAS 部署的 duix.avatar / HeyGem）=====
 set AVATAR_PROVIDER=heygem
