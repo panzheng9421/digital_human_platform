@@ -318,6 +318,343 @@ def _extract_meta(info: dict) -> dict:
     }
 
 
+# 抖音页面里 JSON 数据常见字段名映射（下划线/驼峰混用）
+_DOUYIN_META_KEYS = {
+    "like_count": ["digg_count", "diggCount"],
+    "comment_count": ["comment_count", "commentCount"],
+    "share_count": ["share_count", "shareCount", "repost_count", "repostCount", "forward_count", "forwardCount"],
+    "collect_count": ["collect_count", "collectCount", "save_count", "saveCount", "favorite_count", "favoriteCount"],
+    "duration": ["duration"],
+    "uploader": ["nickname"],
+}
+
+
+def _parse_douyin_meta_from_html(html: str, title: str, page_url: str) -> dict:
+    """从抖音 PC 页面 HTML 中解析视频元数据（RENDER_DATA / SSR_HYDRATED_DATA / 内联 JSON）。
+
+    抖音把视频详情（点赞/评论/转发/收藏/时长/作者等）塞在页面初始数据里，
+    不需要额外请求。优先从 <script id="RENDER_DATA"> 等位置解析。
+    """
+    import json as _json
+    import html as _html
+
+    meta = {"title": title.replace(" - 抖音", "").strip()}
+
+    candidates = []
+
+    # 1) <script id="RENDER_DATA" type="application/json">
+    #    抖音 PC 端这里是 percent-encoded JSON（%7B%22...），不是 HTML 实体，
+    #    先 urllib.unquote 再 json.loads。
+    m = re.search(r'<script[^>]*id="RENDER_DATA"[^>]*>(.*?)</script>', html, re.S | re.I)
+    if m:
+        try:
+            from urllib.parse import unquote
+            raw = unquote(m.group(1).strip())
+            candidates.append(_json.loads(raw))
+        except Exception:
+            pass
+
+    # 2) window._SSR_HYDRATED_DATA
+    m = re.search(r'window\._SSR_HYDRATED_DATA\s*=\s*({.*?});?</script>', html, re.S | re.I)
+    if m:
+        try:
+            candidates.append(_json.loads(m.group(1)))
+        except Exception:
+            pass
+
+    # 3) 任意内联 JSON script（含 itemInfo / videoInfo / aweme_detail / statistics）
+    for script in re.finditer(r'<script[^>]*>(.*?)</script>', html, re.S | re.I):
+        txt = script.group(1)
+        if not any(k in txt for k in ("aweme", "videoInfo", "itemInfo", "digg_count", "diggCount", "comment_count", "statistics")):
+            continue
+        try:
+            body = txt.strip()
+            if body.startswith("window."):
+                body = body.split("=", 1)[1].strip().rstrip(";")
+            data = _json.loads(body)
+            if isinstance(data, (dict, list)):
+                candidates.append(data)
+        except Exception:
+            pass
+
+    # 递归遍历每个候选 JSON，取每个目标字段的首次有效值
+    field_values: dict = {}
+
+    def _first_int(value):
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                s = value.strip()
+                if not s:
+                    return None
+                # 兼容 "1.2万" 这种非纯数字（抖音页面里偶尔有格式化的）
+                if s.endswith("万"):
+                    s = s[:-1]
+                    return int(float(s) * 10000)
+                return int(float(s))
+            except Exception:
+                return None
+        return None
+
+    def _first_duration(value):
+        dur = _first_float(value)
+        if dur is None:
+            return None
+        # 抖音 PC 端常见 duration 字段有秒（25）和毫秒（25780）两种
+        if dur > 1000:
+            dur = dur / 1000.0
+        return dur
+
+    def _first_float(value):
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except Exception:
+                return None
+        return None
+
+    def _walk(node):
+        if isinstance(node, dict):
+            # 作者名可能在 author.nickname / user.nickname
+            if "uploader" not in field_values:
+                for sub_key in ("author", "user"):
+                    sub = node.get(sub_key)
+                    if isinstance(sub, dict):
+                        nn = sub.get("nickname")
+                        if isinstance(nn, str) and nn.strip():
+                            field_values["uploader"] = nn.strip()
+                            break
+            for canonical, keys in _DOUYIN_META_KEYS.items():
+                if canonical in field_values and field_values[canonical] is not None:
+                    continue
+                for k in keys:
+                    if k in node and node[k] is not None:
+                        v = node[k]
+                        if canonical == "duration":
+                            dur = _first_duration(v)
+                            if dur is not None and dur > 0:
+                                field_values[canonical] = dur
+                                break
+                        elif canonical == "uploader":
+                            if isinstance(v, str) and v.strip():
+                                field_values[canonical] = v.strip()
+                                break
+                        else:
+                            n = _first_int(v)
+                            if n is not None:
+                                field_values[canonical] = n
+                                break
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+
+    for data in candidates:
+        _walk(data)
+
+    meta.update(field_values)
+    # 标题兜底：如果 HTML 里没拿到就用传入 title
+    if not meta.get("title"):
+        meta["title"] = title.strip()
+    return meta
+
+
+def _probe_media_duration(path: str) -> float:
+    """用 ffprobe 探测本地音视频时长（秒），失败返回 0。"""
+    import subprocess
+    import json as _json
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        ffmpeg = "ffmpeg"
+    ffprobe = ffmpeg.replace("ffmpeg", "ffprobe")
+    if not os.path.isfile(ffprobe):
+        # imageio_ffmpeg 在 Windows 上通常是 ffmpeg.exe，ffprobe.exe 同目录
+        base = os.path.dirname(ffmpeg)
+        for cand in ("ffprobe.exe", "ffprobe"):
+            p = os.path.join(base, cand)
+            if os.path.isfile(p):
+                ffprobe = p
+                break
+        else:
+            return 0.0
+    try:
+        r = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        d = _json.loads(r.stdout)
+        return float(d.get("format", {}).get("duration") or 0)
+    except Exception:
+        return 0.0
+
+
+def _download_douyin_browser(url: str, dest_dir: str):
+    """抖音链接下载：用真实 Chrome（DrissionPage 控制）+ 复制的登录 profile 打开视频页，
+    绕过抖音对 yt-dlp/f2 的签名风控与「验证码中间页」，再从 performance 资源里抠出 DASH
+    视频轨/音频轨直链，分别下载后用 ffmpeg 合并成完整 mp4。返回 (本地路径, meta)。
+
+    关键约束（实测）：
+      - 必须非 headless：headless 会被抖音识别并弹「验证码中间页」，拿不到视频。
+      - 依赖 storage/chrome_profile：从已登录抖音的 Chrome 复制而来；抖音登录态过期
+        后该 profile 也失效，需要重新复制（见下方 _refresh_douyin_profile 说明）。
+      - 会弹出一个真实 Chrome 窗口（已用 --mute-audio 静音、--autoplay 自动播放）。
+    """
+    import subprocess
+    try:
+        from DrissionPage import ChromiumPage, ChromiumOptions
+    except ImportError:
+        raise RuntimeError("未安装 DrissionPage，无法使用抖音浏览器下载方案")
+
+    chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    profile_dir = os.path.join(STORAGE_DIR, "chrome_profile")
+    if not os.path.isdir(profile_dir):
+        raise RuntimeError(
+            "未找到 Chrome profile（storage/chrome_profile 不存在）；"
+            "请先在 Chrome 登录抖音，再把 User Data 复制/软链到 storage/chrome_profile")
+    if not os.path.isfile(chrome_exe):
+        raise RuntimeError(f"未找到系统 Chrome：{chrome_exe}")
+
+    opts = ChromiumOptions()
+    opts.set_browser_path(chrome_exe)
+    opts.set_user_data_path(profile_dir)
+    opts.headless(False)  # 必须非 headless：抖音检测 headless 会弹验证码
+    opts.set_argument("--disable-blink-features=AutomationControlled")
+    opts.set_argument("--autoplay-policy=no-user-gesture-required")
+    opts.set_argument("--mute-audio")
+
+    # 直链防盗链需要 referer + cookie（抖音 v11/v26-web.douyinvod.com 校验 Referer）
+    ck = {}
+    cf = _resolve_cookiefile()
+    if cf and os.path.exists(cf):
+        for line in open(cf, encoding="utf-8"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            p = line.split("\t")
+            if len(p) >= 7:
+                ck[p[5]] = p[6]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "Referer": "https://www.douyin.com/",
+    }
+
+    tmp_v = os.path.join(dest_dir, "_dy_video.mp4")
+    tmp_a = os.path.join(dest_dir, "_dy_audio.m4a")
+    out = os.path.join(dest_dir, "douyin_video.mp4")  # 默认占位，下面会根据 video_id 重算唯一名
+
+    def _dl(u, path):
+        with requests.get(u, headers=headers, cookies=ck, timeout=600, stream=True) as resp:
+            resp.raise_for_status()
+            with open(path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
+    def _grab() -> tuple:
+        # 1) 优先从页面渲染后的 HTML 抠直链：抖音把视频直链放在页面数据（RENDER_DATA / url_list）
+        #    里，直链是音视频合并流（play_addr），不依赖 <video> 元素渲染或自动播放，
+        #    对短链 / 未自动播放的视频都稳。直链形式为 https://vXX-web.douyinvod.com/...
+        html = getattr(page, "html", "") or ""
+        raw = re.findall(r'https?://[^\s"\'\\<>]+?douyinvod\.com[^\s"\'\\<>]*', html)
+        urls = []
+        for u in raw:
+            u = u.replace("&amp;", "&")  # HTML 实体解码
+            if u not in urls:
+                urls.append(u)
+        video = audio = None
+        for u in urls:
+            if "/audio/" in u:
+                audio = audio or u
+            elif "v26-web" in u or "/video/" in u:
+                video = video or u
+        if video:
+            return video, audio
+        # 2) 兜底：performance API 枚举已请求资源（视频自动播放后才出现 DASH 分片）
+        js = """
+        var es = performance.getEntriesByType('resource');
+        var v_avc='',v_hvc='',a='';
+        for (var i=0;i<es.length;i++){ var u=es[i].name;
+          if (/media-video-avc/.test(u) && !v_avc) v_avc=u;
+          else if (/media-video-hvc1/.test(u) && !v_hvc) v_hvc=u;
+          else if (/media-audio-und-mp4a|media-audio/.test(u) && !a) a=u;
+        }
+        return {v: v_avc||v_hvc, a:a};
+        """
+        r = page.run_js(js) or {}
+        return r.get("v") or "", r.get("a") or ""
+
+    page = ChromiumPage(addr_or_opts=opts)
+    try:
+        page.get(url, timeout=30)
+        time.sleep(4)
+        page.run_js("document.querySelectorAll('video').forEach(function(v){try{v.muted=true;v.play()}catch(e){}});")
+        time.sleep(8)
+        title = page.title or ""
+        html = getattr(page, "html", "") or ""
+        meta = _parse_douyin_meta_from_html(html, title, page.url or url)
+        if "验证码" in title or "登录" in title:
+            raise RuntimeError(
+                "抖音弹出验证码/登录页：storage/chrome_profile 登录态已过期；"
+                "请在 Chrome 登录抖音后，把 User Data 重新复制/覆盖到 storage/chrome_profile")
+        vurl, aurl = _grab()
+        if not vurl:  # 首轮没拿到（页面懒加载/未自动播放），触发播放后再试
+            page.run_js("document.querySelectorAll('video').forEach(function(v){try{v.muted=true;v.play()}catch(e){}});")
+            time.sleep(12)
+            vurl, aurl = _grab()
+        if not vurl:
+            raise RuntimeError("未能从页面提取到视频直链（抖音可能改版，请反馈）")
+        # 生成唯一输出文件名：用 video_id + 标题 slug + 时间戳，避免多次提取互相覆盖
+        final_url = page.url or url
+        m_id = re.search(r"/video/(\d+)", final_url) or re.search(r"modal_id=(\d+)", final_url)
+        aweme_id = m_id.group(1) if m_id else time.strftime("%Y%m%d_%H%M%S")
+        raw_title = title.replace(" - 抖音", "").strip().split("#")[0].strip()
+        slug = re.sub(r"[^\w\s-]", "_", raw_title, flags=re.U)[:30]
+        slug = re.sub(r"[\s_]+", "_", slug).strip("_") or "dy"
+        out = os.path.join(dest_dir, f"douyin_{aweme_id}_{slug}_{time.strftime('%H%M%S')}.mp4")
+        _dl(vurl, tmp_v)
+        if aurl:
+            _dl(aurl, tmp_a)
+    finally:
+        page.quit()
+
+    # ffmpeg 合并：优先 h264 视频轨（兼容性更好）；缺音轨则只拷视频
+    try:
+        import imageio_ffmpeg
+        FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        FFMPEG = "ffmpeg"
+    if os.path.exists(tmp_a) and os.path.getsize(tmp_a) > 0:
+        cmd = [FFMPEG, "-y", "-i", tmp_v, "-i", tmp_a, "-c", "copy", out]
+    else:
+        cmd = [FFMPEG, "-y", "-i", tmp_v, "-c", "copy", out]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+
+    for t in (tmp_v, tmp_a):
+        if os.path.exists(t):
+            try:
+                os.remove(t)
+            except Exception:
+                pass
+
+    # 如果页面数据里没拿到时长，用 ffprobe 探测本地视频兜底
+    if not meta.get("duration") and os.path.exists(out):
+        meta["duration"] = _probe_media_duration(out)
+    if not meta.get("title"):
+        meta["title"] = title.replace(" - 抖音", "").strip()
+    return out, meta
+
+
 def _download_ytdlp(url: str, dest_dir: str, cookiefile: str, no_proxy: bool):
     """用 yt-dlp 下载。no_proxy=True 时禁用代理（抖音系站点直连更稳）。"""
     import yt_dlp
@@ -369,6 +706,14 @@ def download_video(url: str, dest_dir: str):
         print(f"[asr] 使用 cookie 文件: {cookiefile}")
     else:
         print("[asr] 未找到 cookie 文件，回退读取本机 Chrome 登录态（可能受 Chrome ABE 限制失败）")
+
+    # 抖音系：yt-dlp/f2 已被抖音签名风控掐死（长链进 DouyinIE 也 403、短链不被解析），
+    # 优先走浏览器下载方案（真实 Chrome + 登录 profile 绕过验证码中间页与签名风控）。
+    if _should_bypass_proxy(url):
+        try:
+            return _download_douyin_browser(url, dest_dir)
+        except Exception as e:
+            print(f"[asr] 抖音浏览器方案失败，回退 yt-dlp/直链: {_short_err(e)}")
 
     # 尝试顺序：抖音系 -> [直连, 代理]；其他站点 -> [保持当前环境]
     orders = [True, False] if _should_bypass_proxy(url) else [False]
