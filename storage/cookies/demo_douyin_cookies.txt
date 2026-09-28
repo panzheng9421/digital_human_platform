@@ -1,0 +1,32 @@
+# Netscape HTTP Cookie File
+# ============================================================================
+# DEMO 模板（占位示例）—— 这不是真实可用的 cookie！
+# 抖音链接提取需要你自己的抖音登录态 cookie 才能绕过风控 / 登录墙。
+#
+# ── 怎么获得真实 cookie（任选其一，纯本地操作）──────────────────────────
+#   1) 装浏览器插件 “Get cookies.txt LOCALLY”（推荐，不上传云端）
+#      打开 www.douyin.com 并登录 → 点插件图标 → 导出当前域 → 选 Netscape 格式
+#   2) 用 “EditThisCookie” 等插件导出 JSON，再转成 Netscape 格式
+#
+# ── 怎么用（下面这些行的值是占位的，必须替换成你的真实值）──────────────
+#   A) 把插件导出的真实文件【重命名】为：www_douyin_com_cookies.txt
+#      丢进  storage/cookies/  目录，重启服务即可（代码会自动读取，无需改代码）
+#   B) 或用环境变量指定路径（优先级最高）：
+#      set DOUYIN_COOKIES_FILE=D:\ai\workbuddy\opc\digital_human_platform\storage\cookies\你的cookies.txt
+#
+# ── 字段格式（Netscape，Tab 分隔 7 列）──────────────────────────────────
+#   domain \t include_subdomains(TRUE/FALSE) \t path \t secure(TRUE/FALSE) \t expiry(Unix秒,0=会话) \t name \t value
+#
+# ⚠️ 安全：cookie 含你的抖音登录态，等同账号密码，切勿外传 / 提交到 git。
+#    storage/ 已在 .gitignore，本模板与你的真实 cookie 都不会进版本库。
+# ============================================================================
+
+.douyin.com	TRUE	/	TRUE	0	sessionid	YOUR_SESSIONID_HERE
+.douyin.com	TRUE	/	TRUE	0	ttwid	YOUR_TTWID_HERE
+.douyin.com	TRUE	/	TRUE	0	odin_tt	YOUR_ODIN_TT_HERE
+.douyin.com	TRUE	/	TRUE	0	sid_tt	YOUR_SID_TT_HERE
+.douyin.com	TRUE	/	TRUE	0	uid_tt	YOUR_UID_TT_HERE
+.douyin.com	TRUE	/	TRUE	0	passport_csrf_token	YOUR_CSRF_TOKEN_HERE
+.douyin.com	TRUE	/	TRUE	0	sid_guard	YOUR_SID_GUARD_HERE
+.douyin.com	TRUE	/	TRUE	0	store-idc	YOUR_STORE_IDC_HERE
+.douyin.com	TRUE	/	TRUE	0	bd_ticket_guard_client_web	YOUR_TICKET_GUARD_HERE
